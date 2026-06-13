@@ -38,11 +38,7 @@ void GpsParser::poll() {
   while (stream_->available() > 0) {
     const char c = static_cast<char>(stream_->read());
 
-    if (c == '\r') {
-      continue;
-    }
-
-    if (c == '\n') {
+    if (c == '\r' || c == '\n') {
       if (droppingLine_) {
         droppingLine_ = false;
         lineLength_ = 0;

@@ -17,7 +17,7 @@ static constexpr int kModemTxPin = 5;
 static constexpr int kGpsRxPin = 13;
 static constexpr int kGpsTxPin = 14;
 
-static constexpr uint32_t kBootDelayMs = 2000;
+static constexpr uint32_t kBootDelayMs = 10000;
 static constexpr uint32_t kRecoveryDelayMs = 3000;
 static constexpr uint32_t kStatusPrintIntervalMs = 10000;
 static constexpr uint32_t kGpsHeartbeatIntervalMs = 5000;

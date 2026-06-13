@@ -18,14 +18,18 @@ void ModemAtClient::poll() {
         waitingForSendPrompt_ && c == '>') {
       if (pendingResponse_.length() != 0) {
         pendingResponse_ += "\n";
-      }
+      
       pendingResponse_ += ">";
       stream_->print(pendingPayload_);
       waitingForSendPrompt_ = false;
       continue;
     }
 
-    if (c == '\r' || c == '\n') {
+    if (c == '\r') {
+      continue;
+    }
+
+    if (c == '\n') {
       if (droppingLine_) {
         droppingLine_ = false;
         lineLength_ = 0;
@@ -160,64 +164,53 @@ void ModemAtClient::handleLine(const String& line) {
     return;
   }
 
-  String normalizedLine = line;
-  normalizedLine.trim();
-
   parseStatusLine(line);
 
-  if (commandPending_ && normalizedLine == pendingCommand_) {
+  if (commandPending_ && line == pendingCommand_) {
     return;
   }
 
   if (commandPending_) {
     if (pendingKind_ == PendingKind::kSocketSend) {
-      if (normalizedLine == "ERROR" || normalizedLine.startsWith("ERROR=") ||
-          normalizedLine == "SEND FAIL" || normalizedLine.startsWith("+CME ERROR") ||
-          normalizedLine.startsWith("+CMS ERROR")) {
+      if (line == "ERROR" || line == "SEND FAIL") {
         if (pendingResponse_.length() != 0) {
           pendingResponse_ += "\n";
         }
-        pendingResponse_ += normalizedLine;
+        pendingResponse_ += line;
         completeCurrentCommand(false, false);
         return;
       }
 
-      if (normalizedLine == "SENDOK" || normalizedLine == "SEND OK") {
+      if (line == "SENDOK" || line == "SEND OK") {
         if (pendingResponse_.length() != 0) {
           pendingResponse_ += "\n";
         }
-        pendingResponse_ += normalizedLine;
+        pendingResponse_ += line;
         completeCurrentCommand(true, false);
         return;
       }
 
-      if (normalizedLine == "OK" && waitingForSendPrompt_) {
+      if (line == "OK" && waitingForSendPrompt_) {
         if (pendingResponse_.length() != 0) {
           pendingResponse_ += "\n";
         }
-        pendingResponse_ += normalizedLine;
+        pendingResponse_ += line;
         return;
       }
 
       if (pendingResponse_.length() != 0) {
         pendingResponse_ += "\n";
       }
-      pendingResponse_ += normalizedLine;
+      pendingResponse_ += line;
       return;
     }
 
-    if (normalizedLine == "OK") {
+    if (line == "OK") {
       completeCurrentCommand(true, false);
       return;
     }
 
-    if (normalizedLine == "ERROR" || normalizedLine.startsWith("ERROR=") ||
-        normalizedLine.startsWith("+CME ERROR") ||
-        normalizedLine.startsWith("+CMS ERROR")) {
-      if (pendingResponse_.length() != 0) {
-        pendingResponse_ += "\n";
-      }
-      pendingResponse_ += normalizedLine;
+    if (line == "ERROR") {
       completeCurrentCommand(false, false);
       return;
     }
@@ -225,11 +218,11 @@ void ModemAtClient::handleLine(const String& line) {
     if (pendingResponse_.length() != 0) {
       pendingResponse_ += "\n";
     }
-    pendingResponse_ += normalizedLine;
+    pendingResponse_ += line;
     return;
   }
 
-  lastUrc_ = normalizedLine;
+  lastUrc_ = line;
   hasUrc_ = true;
 }
 
