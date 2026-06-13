@@ -18,7 +18,7 @@ void ModemAtClient::poll() {
         waitingForSendPrompt_ && c == '>') {
       if (pendingResponse_.length() != 0) {
         pendingResponse_ += "\n";
-      
+      }
       pendingResponse_ += ">";
       stream_->print(pendingPayload_);
       waitingForSendPrompt_ = false;

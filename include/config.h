@@ -5,9 +5,18 @@
 namespace locator {
 namespace config {
 
+enum class FirmwareMode : uint8_t {
+  kApp = 0,
+  kDebugMonitor = 1,
+};
+
 static constexpr uint32_t kDebugBaudRate = 115200;
 static constexpr uint32_t kGpsBaudRate = 9600;
 static constexpr uint32_t kModemBaudRate = 115200;
+
+// Switch between the regular app and a serial diagnostics firmware.
+// kDebugMonitor is the recommended mode while debugging UART issues.
+static constexpr FirmwareMode kFirmwareMode = FirmwareMode::kDebugMonitor;
 
 // Assumption for current wiring:
 // 4G modem UART uses GPIO4/GPIO5, GPS UART uses GPIO13/GPIO14.

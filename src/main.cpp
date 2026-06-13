@@ -2,6 +2,7 @@
 
 #include "app_controller.h"
 #include "config.h"
+#include "debug_monitor.h"
 
 namespace {
 
@@ -9,6 +10,7 @@ HardwareSerial gpsSerial(1);
 HardwareSerial modemSerial(2);
 
 locator::AppController* gApp = nullptr;
+locator::DebugMonitorApp* gDebugMonitor = nullptr;
 
 }  // namespace
 
@@ -28,9 +30,6 @@ void setup() {
       locator::config::kModemRxPin,
       locator::config::kModemTxPin);
 
-  static locator::AppController app(Serial, gpsSerial, modemSerial);
-  gApp = &app;
-
   Serial.println();
   Serial.println(F("locator boot"));
   Serial.print(F("4G UART RX/TX = "));
@@ -42,10 +41,23 @@ void setup() {
   Serial.print(F("/"));
   Serial.println(locator::config::kGpsTxPin);
 
-  gApp->begin();
+  if (locator::config::kFirmwareMode == locator::config::FirmwareMode::kDebugMonitor) {
+    static locator::DebugMonitorApp debugMonitor(Serial, gpsSerial, modemSerial);
+    gDebugMonitor = &debugMonitor;
+    gDebugMonitor->begin();
+  } else {
+    static locator::AppController app(Serial, gpsSerial, modemSerial);
+    gApp = &app;
+    gApp->begin();
+  }
 }
 
 void loop() {
+  if (gDebugMonitor != nullptr) {
+    gDebugMonitor->poll();
+    return;
+  }
+
   if (gApp != nullptr) {
     gApp->poll();
   }
