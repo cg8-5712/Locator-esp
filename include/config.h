@@ -10,13 +10,20 @@ enum class FirmwareMode : uint8_t {
   kDebugMonitor = 1,
 };
 
+enum class MonitorTarget : uint8_t {
+  kBoth = 0,
+  kGpsOnly = 1,
+  kModemOnly = 2,
+};
+
 static constexpr uint32_t kDebugBaudRate = 115200;
 static constexpr uint32_t kGpsBaudRate = 9600;
 static constexpr uint32_t kModemBaudRate = 115200;
 
 // Switch between the regular app and a serial diagnostics firmware.
 // kDebugMonitor is the recommended mode while debugging UART issues.
-static constexpr FirmwareMode kFirmwareMode = FirmwareMode::kDebugMonitor;
+static constexpr FirmwareMode kFirmwareMode = static_cast<FirmwareMode>(1);
+static constexpr MonitorTarget kMonitorTarget = static_cast<MonitorTarget>(2);
 
 // Assumption for current wiring:
 // 4G modem UART uses GPIO4/GPIO5, GPS UART uses GPIO13/GPIO14.

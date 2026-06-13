@@ -1,5 +1,7 @@
 #include "debug_monitor.h"
 
+#include "config.h"
+
 #include <cstring>
 #include <cstdio>
 
@@ -27,11 +29,23 @@ DebugMonitorApp::DebugMonitorApp(Stream& debug, Stream& gpsStream, Stream& modem
 
 void DebugMonitorApp::begin() {
   debug_.println(F("[MON] UART debug monitor"));
-  debug_.println(F("[MON] Type an AT command in the USB serial monitor and press Enter."));
-  debug_.println(F("[MON] ESP32 will append <CR><LF> before sending to the modem."));
-  debug_.println(F("[MON] GPS and modem RX traffic will be printed as escaped text and HEX."));
-  debug_.println(F("[MON] Auto test: GPS passes on the first valid ASCII/NMEA line."));
-  debug_.println(F("[MON] Auto test: modem passes when an auto-sent AT<CR><LF> returns OK."));
+  debug_.print(F("[MON] target="));
+  if (config::kMonitorTarget == config::MonitorTarget::kGpsOnly) {
+    debug_.println(F("GPS_ONLY"));
+  } else if (config::kMonitorTarget == config::MonitorTarget::kModemOnly) {
+    debug_.println(F("MODEM_ONLY"));
+  } else {
+    debug_.println(F("BOTH"));
+  }
+  debug_.println(F("[MON] RX traffic is printed as escaped text and HEX."));
+  if (config::kMonitorTarget != config::MonitorTarget::kGpsOnly) {
+    debug_.println(F("[MON] Type an AT command in the USB serial monitor and press Enter."));
+    debug_.println(F("[MON] ESP32 will append <CR><LF> before sending to the modem."));
+    debug_.println(F("[MON] Auto test: modem passes when an auto-sent AT<CR><LF> returns OK."));
+  }
+  if (config::kMonitorTarget != config::MonitorTarget::kModemOnly) {
+    debug_.println(F("[MON] Auto test: GPS passes on the first valid ASCII/NMEA line."));
+  }
   lastHeartbeatAtMs_ = millis();
   startedAtMs_ = lastHeartbeatAtMs_;
   lastAtProbeAtMs_ = 0;
@@ -41,17 +55,28 @@ void DebugMonitorApp::begin() {
 }
 
 void DebugMonitorApp::poll() {
-  pollUsbInput();
-  pollGps();
-  pollModem();
-  runAutoTests();
+  if (config::kMonitorTarget != config::MonitorTarget::kGpsOnly) {
+    pollUsbInput();
+    pollModem();
+    runAutoTests();
+  }
+
+  if (config::kMonitorTarget != config::MonitorTarget::kModemOnly) {
+    pollGps();
+  }
 
   const uint32_t now = millis();
   if (now - lastHeartbeatAtMs_ >= 10000) {
-    debug_.print(F("[MON] alive gps="));
-    debug_.print(gpsPassed_ ? F("PASS") : F("WAIT"));
-    debug_.print(F(" modem="));
-    debug_.println(modemPassed_ ? F("PASS") : (waitingForAtOk_ ? F("WAIT_OK") : F("WAIT")));
+    debug_.print(F("[MON] alive"));
+    if (config::kMonitorTarget != config::MonitorTarget::kModemOnly) {
+      debug_.print(F(" gps="));
+      debug_.print(gpsPassed_ ? F("PASS") : F("WAIT"));
+    }
+    if (config::kMonitorTarget != config::MonitorTarget::kGpsOnly) {
+      debug_.print(F(" modem="));
+      debug_.print(modemPassed_ ? F("PASS") : (waitingForAtOk_ ? F("WAIT_OK") : F("WAIT")));
+    }
+    debug_.println();
     lastHeartbeatAtMs_ = now;
   }
 }
@@ -93,11 +118,13 @@ void DebugMonitorApp::pollGps() {
       }
 
       if (gpsLineLength_ == 0) {
+        processGpsTerminator(c);
         continue;
       }
 
       gpsLineBuffer_[gpsLineLength_] = '\0';
       processGpsLine(gpsLineBuffer_, gpsLineLength_);
+      processGpsTerminator(c);
       gpsLineLength_ = 0;
       continue;
     }
@@ -124,11 +151,13 @@ void DebugMonitorApp::pollModem() {
       }
 
       if (modemLineLength_ == 0) {
+        processModemTerminator(c);
         continue;
       }
 
       modemLineBuffer_[modemLineLength_] = '\0';
       processModemLine(modemLineBuffer_, modemLineLength_);
+      processModemTerminator(c);
       modemLineLength_ = 0;
       continue;
     }
@@ -143,10 +172,13 @@ void DebugMonitorApp::pollModem() {
 }
 
 void DebugMonitorApp::processUsbLine() {
-  const String command(usbLineBuffer_);
-  printEscapedLine(debug_, F("[MODEM-TX]"), usbLineBuffer_, usbLineLength_);
-  modemStream_.print(command);
-  modemStream_.print("\r\n");
+  char txBuffer[kLineBufferSize + 2] = {};
+  memcpy(txBuffer, usbLineBuffer_, usbLineLength_);
+  txBuffer[usbLineLength_] = '\r';
+  txBuffer[usbLineLength_ + 1] = '\n';
+
+  printEscapedLine(debug_, F("[MODEM-TX]"), txBuffer, usbLineLength_ + 2);
+  modemStream_.write(reinterpret_cast<const uint8_t*>(txBuffer), usbLineLength_ + 2);
 }
 
 void DebugMonitorApp::processGpsLine(const char* line, size_t length) {
@@ -188,6 +220,16 @@ void DebugMonitorApp::processModemLine(const char* line, size_t length) {
   }
 }
 
+void DebugMonitorApp::processGpsTerminator(char c) {
+  const char term[1] = {c};
+  printEscapedLine(debug_, F("[GPS-RX-TERM]"), term, 1);
+}
+
+void DebugMonitorApp::processModemTerminator(char c) {
+  const char term[1] = {c};
+  printEscapedLine(debug_, F("[MODEM-RX-TERM]"), term, 1);
+}
+
 void DebugMonitorApp::runAutoTests() {
   if (modemPassed_) {
     return;
@@ -206,9 +248,9 @@ void DebugMonitorApp::runAutoTests() {
     return;
   }
 
-  const char probe[] = "AT";
-  printEscapedLine(debug_, F("[MODEM-TX]"), probe, 2);
-  modemStream_.print(F("AT\r\n"));
+  const char probe[] = {'A', 'T', '\r', '\n'};
+  printEscapedLine(debug_, F("[MODEM-TX]"), probe, sizeof(probe));
+  modemStream_.write(reinterpret_cast<const uint8_t*>(probe), sizeof(probe));
   waitingForAtOk_ = true;
   lastAtProbeAtMs_ = now;
 }

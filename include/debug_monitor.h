@@ -21,6 +21,8 @@ class DebugMonitorApp {
   void processUsbLine();
   void processGpsLine(const char* line, size_t length);
   void processModemLine(const char* line, size_t length);
+  void processGpsTerminator(char c);
+  void processModemTerminator(char c);
 
   static bool appendChar(
       char c,
