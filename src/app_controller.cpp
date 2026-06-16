@@ -8,7 +8,8 @@ namespace {
 
 constexpr ModemOp kInitOperations[] = {
     ModemOp::kAt,
-    ModemOp::kDisableEcho,
+    ModemOp::kQueryImei,
+    ModemOp::kQueryFirmwareVersion,
     ModemOp::kQueryNetworkRegistration,
     ModemOp::kQuerySignalQuality,
     ModemOp::kQueryIccid,
@@ -16,6 +17,9 @@ constexpr ModemOp kInitOperations[] = {
 };
 
 constexpr ModemOp kPeriodicOperations[] = {
+    ModemOp::kAt,
+    ModemOp::kQueryImei,
+    ModemOp::kQueryFirmwareVersion,
     ModemOp::kQueryNetworkRegistration,
     ModemOp::kQuerySignalQuality,
     ModemOp::kQueryIccid,
@@ -31,8 +35,10 @@ bool startModemOperation(ModemAtClient& modemClient, ModemOp op) {
   switch (op) {
     case ModemOp::kAt:
       return modemClient.ping();
-    case ModemOp::kDisableEcho:
-      return modemClient.disableEcho();
+    case ModemOp::kQueryImei:
+      return modemClient.queryImei();
+    case ModemOp::kQueryFirmwareVersion:
+      return modemClient.queryFirmwareVersion();
     case ModemOp::kQueryNetworkRegistration:
       return modemClient.queryNetworkRegistration();
     case ModemOp::kQuerySignalQuality:
@@ -237,6 +243,8 @@ void AppController::logModemSummary() {
 
   debug_.print(F("[STATUS] net="));
   debug_.print(status.networkRegistered ? F("ready") : F("waiting"));
+  debug_.print(F(" health="));
+  debug_.print(status.atResponsive ? F("ok") : F("fail"));
   debug_.print(F(" creg="));
   debug_.print(status.cregStat);
   debug_.print(F(" csq="));
@@ -252,6 +260,18 @@ void AppController::logModemSummary() {
     debug_.print(F("N/A"));
   } else {
     debug_.print(status.iccid);
+  }
+  debug_.print(F(" imei="));
+  if (status.imei.length() == 0) {
+    debug_.print(F("N/A"));
+  } else {
+    debug_.print(status.imei);
+  }
+  debug_.print(F(" fw="));
+  if (status.firmwareVersion.length() == 0) {
+    debug_.print(F("N/A"));
+  } else {
+    debug_.print(status.firmwareVersion);
   }
 
   if (hasLastFix_) {

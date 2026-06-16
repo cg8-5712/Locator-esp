@@ -8,8 +8,10 @@ const char* modemOpName(ModemOp op) {
       return "none";
     case ModemOp::kAt:
       return "ping";
-    case ModemOp::kDisableEcho:
-      return "disable_echo";
+    case ModemOp::kQueryImei:
+      return "query_imei";
+    case ModemOp::kQueryFirmwareVersion:
+      return "query_firmware_version";
     case ModemOp::kQueryNetworkRegistration:
       return "query_network_registration";
     case ModemOp::kQuerySignalQuality:
@@ -97,8 +99,12 @@ bool ModemAtClient::ping() {
   return startCommand(ModemOp::kAt, "AT", 1000);
 }
 
-bool ModemAtClient::disableEcho() {
-  return startCommand(ModemOp::kDisableEcho, "ATE0", 1000);
+bool ModemAtClient::queryImei() {
+  return startCommand(ModemOp::kQueryImei, "AT+GSN", 2000);
+}
+
+bool ModemAtClient::queryFirmwareVersion() {
+  return startCommand(ModemOp::kQueryFirmwareVersion, "AT+GMR", 2000);
 }
 
 bool ModemAtClient::queryNetworkRegistration() {
@@ -254,9 +260,8 @@ void ModemAtClient::completeCurrentCommand(bool success, bool timedOut) {
 
   if (success && pendingOp_ == ModemOp::kAt) {
     status_.atResponsive = true;
-  }
-  if (success && pendingOp_ == ModemOp::kDisableEcho) {
-    status_.echoDisabled = true;
+    status_.lastHealthCheckAtMs = millis();
+    status_.lastUpdateMs = status_.lastHealthCheckAtMs;
   }
 
   pendingOp_ = ModemOp::kNone;
@@ -278,6 +283,14 @@ void ModemAtClient::handleLine(const String& line) {
   String normalizedLine = line;
   normalizedLine.trim();
   parseStatusLine(normalizedLine);
+
+  if (commandPending_) {
+    if (pendingOp_ == ModemOp::kQueryImei) {
+      parseImei(normalizedLine);
+    } else if (pendingOp_ == ModemOp::kQueryFirmwareVersion) {
+      parseFirmwareVersion(normalizedLine);
+    }
+  }
 
   if (commandPending_ && normalizedLine == pendingCommand_) {
     return;
@@ -385,6 +398,38 @@ void ModemAtClient::parseStatusLine(const String& line) {
     status_.mqttConnected = status_.mqttStatus == 1;
     status_.lastUpdateMs = millis();
   }
+}
+
+void ModemAtClient::parseImei(const String& line) {
+  if (line.length() == 0 || line == "OK" || line == "ERROR" || line.startsWith("ERROR=") ||
+      line.startsWith("+CME ERROR") || line.startsWith("+CMS ERROR")) {
+    return;
+  }
+
+  bool allDigits = true;
+  for (size_t i = 0; i < line.length(); ++i) {
+    if (!isDigit(line[i])) {
+      allDigits = false;
+      break;
+    }
+  }
+
+  if (!allDigits) {
+    return;
+  }
+
+  status_.imei = line;
+  status_.lastUpdateMs = millis();
+}
+
+void ModemAtClient::parseFirmwareVersion(const String& line) {
+  if (line.length() == 0 || line == "OK" || line == "ERROR" || line.startsWith("ERROR=") ||
+      line.startsWith("+CME ERROR") || line.startsWith("+CMS ERROR")) {
+    return;
+  }
+
+  status_.firmwareVersion = line;
+  status_.lastUpdateMs = millis();
 }
 
 void ModemAtClient::parseCreg(const String& line) {

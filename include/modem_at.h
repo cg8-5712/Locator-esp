@@ -7,7 +7,8 @@ namespace locator {
 enum class ModemOp : uint8_t {
   kNone = 0,
   kAt,
-  kDisableEcho,
+  kQueryImei,
+  kQueryFirmwareVersion,
   kQueryNetworkRegistration,
   kQuerySignalQuality,
   kQueryIccid,
@@ -32,7 +33,6 @@ struct AtCommandResult {
 
 struct ModemStatus {
   bool atResponsive = false;
-  bool echoDisabled = false;
   bool networkRegistered = false;
   bool mqttConnected = false;
   int cregMode = -1;
@@ -41,8 +41,11 @@ struct ModemStatus {
   int csqBer = -1;
   int simSlot = -1;
   int mqttStatus = -1;
+  String imei;
+  String firmwareVersion;
   String iccid;
   uint32_t lastUpdateMs = 0;
+  uint32_t lastHealthCheckAtMs = 0;
 };
 
 class ModemAtClient {
@@ -51,7 +54,8 @@ class ModemAtClient {
   void poll();
 
   bool ping();
-  bool disableEcho();
+  bool queryImei();
+  bool queryFirmwareVersion();
   bool queryNetworkRegistration();
   bool querySignalQuality();
   bool queryIccid();
@@ -82,6 +86,8 @@ class ModemAtClient {
   void completeCurrentCommand(bool success, bool timedOut);
   void handleLine(const String& line);
   void parseStatusLine(const String& line);
+  void parseImei(const String& line);
+  void parseFirmwareVersion(const String& line);
   void parseCreg(const String& line);
   void parseCsq(const String& line);
   void parseIccid(const String& line);
