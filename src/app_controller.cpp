@@ -6,30 +6,47 @@ namespace locator {
 
 namespace {
 
-struct CommandDefinition {
-  const char* command;
-  uint32_t timeoutMs;
+constexpr ModemOp kInitOperations[] = {
+    ModemOp::kAt,
+    ModemOp::kDisableEcho,
+    ModemOp::kQueryNetworkRegistration,
+    ModemOp::kQuerySignalQuality,
+    ModemOp::kQueryIccid,
+    ModemOp::kQuerySimSlot,
 };
 
-constexpr CommandDefinition kInitCommands[] = {
-    {"AT", 1000},
-    {"ATE0", 1000},
-    {"AT+CREG?", 1500},
-    {"AT+CSQ", 1500},
-    {"AT+QCCID", 2000},
-    {"AT+SINGLESIM?", 1500},
+constexpr ModemOp kPeriodicOperations[] = {
+    ModemOp::kQueryNetworkRegistration,
+    ModemOp::kQuerySignalQuality,
+    ModemOp::kQueryIccid,
+    ModemOp::kQuerySimSlot,
+    ModemOp::kMqttQueryStatus,
 };
 
-constexpr CommandDefinition kPeriodicCommands[] = {
-    {"AT+CREG?", 1500},
-    {"AT+CSQ", 1500},
-    {"AT+QCCID", 2000},
-    {"AT+SINGLESIM?", 1500},
-    {"AT+QMTSTATU", 2000},
-};
+constexpr size_t kInitOperationCount = sizeof(kInitOperations) / sizeof(kInitOperations[0]);
+constexpr size_t kPeriodicOperationCount =
+    sizeof(kPeriodicOperations) / sizeof(kPeriodicOperations[0]);
 
-constexpr size_t kInitCommandCount = sizeof(kInitCommands) / sizeof(kInitCommands[0]);
-constexpr size_t kPeriodicCommandCount = sizeof(kPeriodicCommands) / sizeof(kPeriodicCommands[0]);
+bool startModemOperation(ModemAtClient& modemClient, ModemOp op) {
+  switch (op) {
+    case ModemOp::kAt:
+      return modemClient.ping();
+    case ModemOp::kDisableEcho:
+      return modemClient.disableEcho();
+    case ModemOp::kQueryNetworkRegistration:
+      return modemClient.queryNetworkRegistration();
+    case ModemOp::kQuerySignalQuality:
+      return modemClient.querySignalQuality();
+    case ModemOp::kQueryIccid:
+      return modemClient.queryIccid();
+    case ModemOp::kQuerySimSlot:
+      return modemClient.querySimSlot();
+    case ModemOp::kMqttQueryStatus:
+      return modemClient.mqttQueryStatus();
+    default:
+      return false;
+  }
+}
 
 }  // namespace
 
@@ -161,7 +178,7 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
       initRetryCount_ = 0;
       initCommandIndex_++;
 
-      if (initCommandIndex_ >= kInitCommandCount) {
+      if (initCommandIndex_ >= kInitOperationCount) {
         state_ = State::kInitMqtt;
         stateEnteredAtMs_ = millis();
         mqttCommandIndex_ = 0;
@@ -208,7 +225,8 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
   }
 
   if (state_ == State::kRunning && !result.success) {
-    if (result.command == "AT+CREG?" || result.command == "AT+CSQ") {
+    if (result.op == ModemOp::kQueryNetworkRegistration ||
+        result.op == ModemOp::kQuerySignalQuality) {
       debug_.println(F("[APP] Periodic modem query failed"));
     }
   }
@@ -245,12 +263,12 @@ void AppController::logModemSummary() {
 }
 
 void AppController::requestNextInitCommand() {
-  if (!modemClient_.isIdle() || initCommandIndex_ >= kInitCommandCount) {
+  if (!modemClient_.isIdle() || initCommandIndex_ >= kInitOperationCount) {
     return;
   }
 
-  const CommandDefinition& cmd = kInitCommands[initCommandIndex_];
-  if (!modemClient_.sendCommand(cmd.command, cmd.timeoutMs)) {
+  const ModemOp op = kInitOperations[initCommandIndex_];
+  if (!startModemOperation(modemClient_, op)) {
     enterRecovery(F("cannot send init command"));
   }
 }
@@ -260,47 +278,40 @@ void AppController::requestNextMqttCommand() {
     return;
   }
 
-  String command;
-  uint32_t timeoutMs = 3000;
-
   switch (mqttCommandIndex_) {
     case 0:
-      command = "AT+QMTCFG=\"";
-      command += config::kMqttClientId;
-      command += "\",\"";
-      command += config::kMqttUsername;
-      command += "\",\"";
-      command += config::kMqttPassword;
-      command += "\"";
-      break;
+      if (!modemClient_.mqttConfigureCredentials(
+              config::kMqttClientId,
+              config::kMqttUsername,
+              config::kMqttPassword)) {
+        enterRecovery(F("cannot send MQTT init command"));
+      }
+      return;
 
     case 1:
-      command = "AT+QMTCONNCFG=\"";
-      command += config::kMqttBroker;
-      command += "\",";
-      command += String(config::kMqttPort);
-      command += ",";
-      command += String(config::kMqttAutoReconnect ? 1 : 0);
-      break;
+      if (!modemClient_.mqttConfigureBroker(
+              config::kMqttBroker,
+              config::kMqttPort,
+              config::kMqttAutoReconnect)) {
+        enterRecovery(F("cannot send MQTT init command"));
+      }
+      return;
 
     case 2:
-      command = "AT+QMTSTART=";
-      command += String(config::kMqttCleanSession);
-      command += ",";
-      command += String(config::kMqttKeepAliveSeconds);
-      break;
+      if (!modemClient_.mqttStart(
+              config::kMqttCleanSession, config::kMqttKeepAliveSeconds)) {
+        enterRecovery(F("cannot send MQTT init command"));
+      }
+      return;
 
     case 3:
-      command = "AT+QMTSTATU";
-      timeoutMs = 2000;
-      break;
+      if (!modemClient_.mqttQueryStatus()) {
+        enterRecovery(F("cannot send MQTT init command"));
+      }
+      return;
 
     default:
       return;
-  }
-
-  if (!modemClient_.sendCommand(command, timeoutMs)) {
-    enterRecovery(F("cannot send MQTT init command"));
   }
 }
 
@@ -315,13 +326,7 @@ void AppController::requestNextPeriodicCommand() {
   const bool shouldPublish = now - lastPublishAtMs_ >= config::kMqttPublishIntervalMs;
   if (shouldPublish && modemClient_.status().mqttConnected) {
     const String payload = buildLocationPayload();
-    String command = "AT+QMTPUB=\"";
-    command += config::kMqttLocationTopic;
-    command += "\",0,0,\"";
-    command += payload;
-    command += "\"";
-
-    if (modemClient_.sendCommand(command, 3000)) {
+    if (modemClient_.mqttPublish(config::kMqttLocationTopic, payload)) {
       lastPublishAtMs_ = now;
       return;
     }
@@ -335,10 +340,10 @@ void AppController::requestNextPeriodicCommand() {
   }
 
   lastPeriodicRequestAtMs = now;
-  const CommandDefinition& cmd = kPeriodicCommands[periodicCommandIndex_];
-  periodicCommandIndex_ = (periodicCommandIndex_ + 1) % kPeriodicCommandCount;
+  const ModemOp op = kPeriodicOperations[periodicCommandIndex_];
+  periodicCommandIndex_ = (periodicCommandIndex_ + 1) % kPeriodicOperationCount;
 
-  if (!modemClient_.sendCommand(cmd.command, cmd.timeoutMs)) {
+  if (!startModemOperation(modemClient_, op)) {
     enterRecovery(F("cannot send periodic command"));
   }
 }

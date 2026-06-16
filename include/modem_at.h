@@ -4,7 +4,26 @@
 
 namespace locator {
 
+enum class ModemOp : uint8_t {
+  kNone = 0,
+  kAt,
+  kDisableEcho,
+  kQueryNetworkRegistration,
+  kQuerySignalQuality,
+  kQueryIccid,
+  kQuerySimSlot,
+  kMqttConfigureCredentials,
+  kMqttConfigureBroker,
+  kMqttStart,
+  kMqttQueryStatus,
+  kMqttPublish,
+  kSocketSend,
+};
+
+const char* modemOpName(ModemOp op);
+
 struct AtCommandResult {
+  ModemOp op = ModemOp::kNone;
   String command;
   String response;
   bool success = false;
@@ -31,8 +50,18 @@ class ModemAtClient {
   void begin(Stream& stream);
   void poll();
 
-  bool sendCommand(const String& command, uint32_t timeoutMs);
-  bool sendSocketData(uint8_t linkNumber, const String& payload, uint32_t timeoutMs);
+  bool ping();
+  bool disableEcho();
+  bool queryNetworkRegistration();
+  bool querySignalQuality();
+  bool queryIccid();
+  bool querySimSlot();
+  bool mqttConfigureCredentials(const char* clientId, const char* username, const char* password);
+  bool mqttConfigureBroker(const char* host, uint16_t port, bool autoReconnect);
+  bool mqttStart(uint8_t cleanSession, uint16_t keepAliveSeconds);
+  bool mqttQueryStatus();
+  bool mqttPublish(const char* topic, const String& payload, uint8_t qos = 0, bool retain = false);
+  bool socketSend(uint8_t linkNumber, const String& payload, uint32_t timeoutMs);
   bool isIdle() const;
 
   bool takeCompletedCommand(AtCommandResult& outResult);
@@ -49,6 +78,7 @@ class ModemAtClient {
 
   static constexpr size_t kLineBufferSize = 192;
 
+  bool startCommand(ModemOp op, const String& command, uint32_t timeoutMs);
   void completeCurrentCommand(bool success, bool timedOut);
   void handleLine(const String& line);
   void parseStatusLine(const String& line);
@@ -64,6 +94,7 @@ class ModemAtClient {
 
   bool commandPending_ = false;
   PendingKind pendingKind_ = PendingKind::kNone;
+  ModemOp pendingOp_ = ModemOp::kNone;
   String pendingCommand_;
   String pendingResponse_;
   String pendingPayload_;

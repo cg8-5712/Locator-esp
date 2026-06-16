@@ -2,6 +2,39 @@
 
 namespace locator {
 
+const char* modemOpName(ModemOp op) {
+  switch (op) {
+    case ModemOp::kNone:
+      return "none";
+    case ModemOp::kAt:
+      return "ping";
+    case ModemOp::kDisableEcho:
+      return "disable_echo";
+    case ModemOp::kQueryNetworkRegistration:
+      return "query_network_registration";
+    case ModemOp::kQuerySignalQuality:
+      return "query_signal_quality";
+    case ModemOp::kQueryIccid:
+      return "query_iccid";
+    case ModemOp::kQuerySimSlot:
+      return "query_sim_slot";
+    case ModemOp::kMqttConfigureCredentials:
+      return "mqtt_configure_credentials";
+    case ModemOp::kMqttConfigureBroker:
+      return "mqtt_configure_broker";
+    case ModemOp::kMqttStart:
+      return "mqtt_start";
+    case ModemOp::kMqttQueryStatus:
+      return "mqtt_query_status";
+    case ModemOp::kMqttPublish:
+      return "mqtt_publish";
+    case ModemOp::kSocketSend:
+      return "socket_send";
+  }
+
+  return "unknown";
+}
+
 void ModemAtClient::begin(Stream& stream) {
   stream_ = &stream;
 }
@@ -60,12 +93,90 @@ void ModemAtClient::poll() {
   }
 }
 
-bool ModemAtClient::sendCommand(const String& command, uint32_t timeoutMs) {
+bool ModemAtClient::ping() {
+  return startCommand(ModemOp::kAt, "AT", 1000);
+}
+
+bool ModemAtClient::disableEcho() {
+  return startCommand(ModemOp::kDisableEcho, "ATE0", 1000);
+}
+
+bool ModemAtClient::queryNetworkRegistration() {
+  return startCommand(ModemOp::kQueryNetworkRegistration, "AT+CREG?", 1500);
+}
+
+bool ModemAtClient::querySignalQuality() {
+  return startCommand(ModemOp::kQuerySignalQuality, "AT+CSQ", 1500);
+}
+
+bool ModemAtClient::queryIccid() {
+  return startCommand(ModemOp::kQueryIccid, "AT+QCCID", 2000);
+}
+
+bool ModemAtClient::querySimSlot() {
+  return startCommand(ModemOp::kQuerySimSlot, "AT+SINGLESIM?", 1500);
+}
+
+bool ModemAtClient::mqttConfigureCredentials(
+    const char* clientId,
+    const char* username,
+    const char* password) {
+  String command = "AT+QMTCFG=\"";
+  command += clientId;
+  command += "\",\"";
+  command += username;
+  command += "\",\"";
+  command += password;
+  command += "\"";
+  return startCommand(ModemOp::kMqttConfigureCredentials, command, 3000);
+}
+
+bool ModemAtClient::mqttConfigureBroker(const char* host, uint16_t port, bool autoReconnect) {
+  String command = "AT+QMTCONNCFG=\"";
+  command += host;
+  command += "\",";
+  command += String(port);
+  command += ",";
+  command += String(autoReconnect ? 1 : 0);
+  return startCommand(ModemOp::kMqttConfigureBroker, command, 3000);
+}
+
+bool ModemAtClient::mqttStart(uint8_t cleanSession, uint16_t keepAliveSeconds) {
+  String command = "AT+QMTSTART=";
+  command += String(cleanSession);
+  command += ",";
+  command += String(keepAliveSeconds);
+  return startCommand(ModemOp::kMqttStart, command, 3000);
+}
+
+bool ModemAtClient::mqttQueryStatus() {
+  return startCommand(ModemOp::kMqttQueryStatus, "AT+QMTSTATU", 2000);
+}
+
+bool ModemAtClient::mqttPublish(
+    const char* topic,
+    const String& payload,
+    uint8_t qos,
+    bool retain) {
+  String command = "AT+QMTPUB=\"";
+  command += topic;
+  command += "\",";
+  command += String(qos);
+  command += ",";
+  command += String(retain ? 1 : 0);
+  command += ",\"";
+  command += payload;
+  command += "\"";
+  return startCommand(ModemOp::kMqttPublish, command, 3000);
+}
+
+bool ModemAtClient::startCommand(ModemOp op, const String& command, uint32_t timeoutMs) {
   if (stream_ == nullptr || commandPending_) {
     return false;
   }
 
   pendingKind_ = PendingKind::kLineCommand;
+  pendingOp_ = op;
   pendingCommand_ = command;
   pendingResponse_.remove(0);
   pendingPayload_.remove(0);
@@ -79,12 +190,13 @@ bool ModemAtClient::sendCommand(const String& command, uint32_t timeoutMs) {
   return true;
 }
 
-bool ModemAtClient::sendSocketData(uint8_t linkNumber, const String& payload, uint32_t timeoutMs) {
+bool ModemAtClient::socketSend(uint8_t linkNumber, const String& payload, uint32_t timeoutMs) {
   if (stream_ == nullptr || commandPending_ || payload.length() == 0) {
     return false;
   }
 
   pendingKind_ = PendingKind::kSocketSend;
+  pendingOp_ = ModemOp::kSocketSend;
   pendingPayload_ = payload;
   pendingCommand_ = "AT+QISEND=" + String(linkNumber) + "," + String(payload.length());
   pendingResponse_.remove(0);
@@ -109,6 +221,7 @@ bool ModemAtClient::takeCompletedCommand(AtCommandResult& outResult) {
 
   outResult = completedCommand_;
   hasCompletedCommand_ = false;
+  completedCommand_.op = ModemOp::kNone;
   completedCommand_.command.remove(0);
   completedCommand_.response.remove(0);
   completedCommand_.success = false;
@@ -132,19 +245,21 @@ const ModemStatus& ModemAtClient::status() const {
 }
 
 void ModemAtClient::completeCurrentCommand(bool success, bool timedOut) {
+  completedCommand_.op = pendingOp_;
   completedCommand_.command = pendingCommand_;
   completedCommand_.response = pendingResponse_;
   completedCommand_.success = success;
   completedCommand_.timedOut = timedOut;
   hasCompletedCommand_ = true;
 
-  if (success && pendingCommand_ == "AT") {
+  if (success && pendingOp_ == ModemOp::kAt) {
     status_.atResponsive = true;
   }
-  if (success && pendingCommand_ == "ATE0") {
+  if (success && pendingOp_ == ModemOp::kDisableEcho) {
     status_.echoDisabled = true;
   }
 
+  pendingOp_ = ModemOp::kNone;
   pendingCommand_.remove(0);
   pendingResponse_.remove(0);
   pendingPayload_.remove(0);
