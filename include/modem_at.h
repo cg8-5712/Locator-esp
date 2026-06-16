@@ -15,11 +15,13 @@ struct ModemStatus {
   bool atResponsive = false;
   bool echoDisabled = false;
   bool networkRegistered = false;
+  bool mqttConnected = false;
   int cregMode = -1;
   int cregStat = -1;
   int csqRssi = -1;
   int csqBer = -1;
   int simSlot = -1;
+  int mqttStatus = -1;
   String iccid;
   uint32_t lastUpdateMs = 0;
 };

@@ -18,6 +18,19 @@ void setup() {
   Serial.begin(locator::config::kDebugBaudRate);
   delay(200);
 
+  Serial.println();
+  Serial.println(F("locator boot"));
+  Serial.print(F("4G UART RX/TX = "));
+  Serial.print(locator::config::kModemRxPin);
+  Serial.print(F("/"));
+  Serial.println(locator::config::kModemTxPin);
+  Serial.print(F("GPS UART RX/TX = "));
+  Serial.print(locator::config::kGpsRxPin);
+  Serial.print(F("/"));
+  Serial.println(locator::config::kGpsTxPin);
+  Serial.println();
+  Serial.println(F("Starting gps amd modem UARTs..."));
+
   gpsSerial.begin(
       locator::config::kGpsBaudRate,
       SERIAL_8N1,
@@ -30,16 +43,6 @@ void setup() {
       locator::config::kModemRxPin,
       locator::config::kModemTxPin);
 
-  Serial.println();
-  Serial.println(F("locator boot"));
-  Serial.print(F("4G UART RX/TX = "));
-  Serial.print(locator::config::kModemRxPin);
-  Serial.print(F("/"));
-  Serial.println(locator::config::kModemTxPin);
-  Serial.print(F("GPS UART RX/TX = "));
-  Serial.print(locator::config::kGpsRxPin);
-  Serial.print(F("/"));
-  Serial.println(locator::config::kGpsTxPin);
 
   if (locator::config::kFirmwareMode == locator::config::FirmwareMode::kDebugMonitor) {
     static locator::DebugMonitorApp debugMonitor(Serial, gpsSerial, modemSerial);

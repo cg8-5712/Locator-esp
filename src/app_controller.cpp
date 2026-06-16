@@ -25,6 +25,7 @@ constexpr CommandDefinition kPeriodicCommands[] = {
     {"AT+CSQ", 1500},
     {"AT+QCCID", 2000},
     {"AT+SINGLESIM?", 1500},
+    {"AT+QMTSTATU", 2000},
 };
 
 constexpr size_t kInitCommandCount = sizeof(kInitCommands) / sizeof(kInitCommands[0]);
@@ -44,8 +45,11 @@ void AppController::begin() {
   lastStatusPrintAtMs_ = millis();
   lastGpsHeartbeatAtMs_ = millis();
   initCommandIndex_ = 0;
+  mqttCommandIndex_ = 0;
   periodicCommandIndex_ = 0;
   initRetryCount_ = 0;
+  mqttRetryCount_ = 0;
+  lastPublishAtMs_ = 0;
 
   debug_.println(F("[APP] Boot delay started"));
 }
@@ -69,6 +73,10 @@ void AppController::poll() {
       requestNextInitCommand();
       break;
 
+    case State::kInitMqtt:
+      requestNextMqttCommand();
+      break;
+
     case State::kRunning:
       requestNextPeriodicCommand();
       break;
@@ -80,6 +88,8 @@ void AppController::poll() {
         stateEnteredAtMs_ = now;
         initCommandIndex_ = 0;
         initRetryCount_ = 0;
+        mqttCommandIndex_ = 0;
+        mqttRetryCount_ = 0;
       }
       break;
   }
@@ -152,9 +162,11 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
       initCommandIndex_++;
 
       if (initCommandIndex_ >= kInitCommandCount) {
-        state_ = State::kRunning;
+        state_ = State::kInitMqtt;
         stateEnteredAtMs_ = millis();
-        debug_.println(F("[APP] Modem init finished"));
+        mqttCommandIndex_ = 0;
+        mqttRetryCount_ = 0;
+        debug_.println(F("[APP] Modem init finished, starting MQTT init"));
       }
       return;
     }
@@ -167,6 +179,31 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
     }
 
     enterRecovery(F("init failed"));
+    return;
+  }
+
+  if (state_ == State::kInitMqtt) {
+    if (result.success) {
+      mqttRetryCount_ = 0;
+      mqttCommandIndex_++;
+
+      if (mqttCommandIndex_ >= 4) {
+        state_ = State::kRunning;
+        stateEnteredAtMs_ = millis();
+        lastPublishAtMs_ = 0;
+        debug_.println(F("[APP] MQTT init finished"));
+      }
+      return;
+    }
+
+    mqttRetryCount_++;
+    if (mqttRetryCount_ <= 2) {
+      debug_.print(F("[APP] Retrying MQTT command, attempt "));
+      debug_.println(mqttRetryCount_ + 1);
+      return;
+    }
+
+    enterRecovery(F("mqtt init failed"));
     return;
   }
 
@@ -190,6 +227,8 @@ void AppController::logModemSummary() {
   debug_.print(status.csqBer);
   debug_.print(F(" sim="));
   debug_.print(status.simSlot);
+  debug_.print(F(" mqtt="));
+  debug_.print(status.mqttStatus);
   debug_.print(F(" iccid="));
   if (status.iccid.length() == 0) {
     debug_.print(F("N/A"));
@@ -216,6 +255,55 @@ void AppController::requestNextInitCommand() {
   }
 }
 
+void AppController::requestNextMqttCommand() {
+  if (!modemClient_.isIdle()) {
+    return;
+  }
+
+  String command;
+  uint32_t timeoutMs = 3000;
+
+  switch (mqttCommandIndex_) {
+    case 0:
+      command = "AT+QMTCFG=\"";
+      command += config::kMqttClientId;
+      command += "\",\"";
+      command += config::kMqttUsername;
+      command += "\",\"";
+      command += config::kMqttPassword;
+      command += "\"";
+      break;
+
+    case 1:
+      command = "AT+QMTCONNCFG=\"";
+      command += config::kMqttBroker;
+      command += "\",";
+      command += String(config::kMqttPort);
+      command += ",";
+      command += String(config::kMqttAutoReconnect ? 1 : 0);
+      break;
+
+    case 2:
+      command = "AT+QMTSTART=";
+      command += String(config::kMqttCleanSession);
+      command += ",";
+      command += String(config::kMqttKeepAliveSeconds);
+      break;
+
+    case 3:
+      command = "AT+QMTSTATU";
+      timeoutMs = 2000;
+      break;
+
+    default:
+      return;
+  }
+
+  if (!modemClient_.sendCommand(command, timeoutMs)) {
+    enterRecovery(F("cannot send MQTT init command"));
+  }
+}
+
 void AppController::requestNextPeriodicCommand() {
   static uint32_t lastPeriodicRequestAtMs = 0;
 
@@ -224,6 +312,24 @@ void AppController::requestNextPeriodicCommand() {
   }
 
   const uint32_t now = millis();
+  const bool shouldPublish = now - lastPublishAtMs_ >= config::kMqttPublishIntervalMs;
+  if (shouldPublish && modemClient_.status().mqttConnected) {
+    const String payload = buildLocationPayload();
+    String command = "AT+QMTPUB=\"";
+    command += config::kMqttLocationTopic;
+    command += "\",0,0,\"";
+    command += payload;
+    command += "\"";
+
+    if (modemClient_.sendCommand(command, 3000)) {
+      lastPublishAtMs_ = now;
+      return;
+    }
+
+    enterRecovery(F("cannot publish MQTT payload"));
+    return;
+  }
+
   if (now - lastPeriodicRequestAtMs < 5000) {
     return;
   }
@@ -244,6 +350,20 @@ void AppController::enterRecovery(const __FlashStringHelper* reason) {
   stateEnteredAtMs_ = millis();
   initCommandIndex_ = 0;
   initRetryCount_ = 0;
+  mqttCommandIndex_ = 0;
+  mqttRetryCount_ = 0;
+}
+
+String AppController::buildLocationPayload() const {
+  if (!hasLastFix_) {
+    return String();
+  }
+
+  if (millis() - gpsParser_.lastValidFixAtMs() > config::kGpsStaleAfterMs) {
+    return String();
+  }
+
+  return lastFix_.compactPayload;
 }
 
 }  // namespace locator
