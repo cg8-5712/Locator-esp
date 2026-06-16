@@ -37,6 +37,10 @@ void GpsParser::poll() {
 
   while (stream_->available() > 0) {
     const char c = static_cast<char>(stream_->read());
+    if (!hasSeenAnyData_) {
+      hasSeenAnyData_ = true;
+      firstDataAtMs_ = millis();
+    }
 
     if (c == '\r' || c == '\n') {
       if (droppingLine_) {
@@ -85,6 +89,14 @@ const GpsStats& GpsParser::stats() const {
 
 uint32_t GpsParser::lastValidFixAtMs() const {
   return lastValidFixAtMs_;
+}
+
+bool GpsParser::hasSeenAnyData() const {
+  return hasSeenAnyData_;
+}
+
+uint32_t GpsParser::firstDataAtMs() const {
+  return firstDataAtMs_;
 }
 
 bool GpsParser::processLine(const char* line) {

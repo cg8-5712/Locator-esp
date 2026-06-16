@@ -112,6 +112,8 @@ void AppController::begin() {
   initRetryCount_ = 0;
   mqttRetryCount_ = 0;
   lastPublishAtMs_ = 0;
+  gpsStartedLogged_ = false;
+  gpsUnableLogged_ = false;
 
   debug_.println(F("[APP] Boot delay started"));
 }
@@ -171,9 +173,16 @@ void AppController::poll() {
 void AppController::handleGps() {
   gpsParser_.poll();
 
+  const GpsState gpsState = currentGpsState();
+  if (!gpsStartedLogged_ && gpsState != GpsState::kNotStarted) {
+    debug_.println(F("[GPS] Startup success: data stream detected"));
+    gpsStartedLogged_ = true;
+  }
+
   if (gpsParser_.hasNewFix()) {
     lastFix_ = gpsParser_.takeLatestFix();
     hasLastFix_ = true;
+    gpsUnableLogged_ = false;
 
     debug_.print(F("[GPS] Valid GNGLL: "));
     debug_.println(lastFix_.rawSentence);
@@ -183,9 +192,16 @@ void AppController::handleGps() {
     return;
   }
 
+  if (!gpsUnableLogged_ && gpsState == GpsState::kUnableToLocate) {
+    debug_.println(F("[GPS] Unable to locate within timeout, will publish zero payload"));
+    gpsUnableLogged_ = true;
+  }
+
   if (millis() - lastGpsHeartbeatAtMs_ >= config::kGpsHeartbeatIntervalMs) {
     const GpsStats& stats = gpsParser_.stats();
-    debug_.print(F("[GPS] Waiting fix. lines="));
+    debug_.print(F("[GPS] state="));
+    debug_.print(gpsStateLabel(gpsState));
+    debug_.print(F(" lines="));
     debug_.print(stats.totalLines);
     debug_.print(F(" gngll="));
     debug_.print(stats.totalGngll);
@@ -252,7 +268,7 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
   }
 
   if (state_ == State::kInitMqtt) {
-    bool mqttStepSucceeded = result.success;
+    bool mqttStepSucceeded = shouldTreatMqttInitResultAsSuccess(result);
     if (result.op == ModemOp::kMqttQueryStatus &&
         mqttStepSucceeded &&
         !modemClient_.status().mqttConnected) {
@@ -302,6 +318,8 @@ void AppController::logModemSummary() {
   debug_.print(status.startupReady ? F("ready") : F("waiting"));
   debug_.print(F(" health="));
   debug_.print(status.healthCheckOk ? F("ok") : F("fail"));
+  debug_.print(F(" gps="));
+  debug_.print(gpsStateLabel(currentGpsState()));
   debug_.print(F(" net="));
   debug_.print(status.networkRegistered ? F("ready") : F("waiting"));
   debug_.print(F(" creg="));
@@ -458,13 +476,53 @@ void AppController::enterRecovery(const __FlashStringHelper* reason) {
   mqttRetryCount_ = 0;
 }
 
-String AppController::buildLocationPayload() const {
-  if (!hasLastFix_) {
-    return String();
+bool AppController::shouldTreatMqttInitResultAsSuccess(const AtCommandResult& result) const {
+  if (result.success) {
+    return true;
   }
 
-  if (millis() - gpsParser_.lastValidFixAtMs() > config::kGpsStaleAfterMs) {
-    return String();
+  if (result.op == ModemOp::kMqttConfigureBroker && result.response.indexOf("ERROR=202") >= 0) {
+    debug_.println(F("[INIT][MQTT] Broker already exists, continuing with existing server"));
+    return true;
+  }
+
+  return false;
+}
+
+AppController::GpsState AppController::currentGpsState() const {
+  if (!gpsParser_.hasSeenAnyData()) {
+    return GpsState::kNotStarted;
+  }
+
+  if (hasLastFix_ && millis() - gpsParser_.lastValidFixAtMs() <= config::kGpsStaleAfterMs) {
+    return GpsState::kLocated;
+  }
+
+  if (millis() - gpsParser_.firstDataAtMs() >= config::kGpsUnableToLocateAfterMs) {
+    return GpsState::kUnableToLocate;
+  }
+
+  return GpsState::kStartedSearching;
+}
+
+const __FlashStringHelper* AppController::gpsStateLabel(GpsState state) const {
+  switch (state) {
+    case GpsState::kNotStarted:
+      return F("not_started");
+    case GpsState::kStartedSearching:
+      return F("searching");
+    case GpsState::kLocated:
+      return F("located");
+    case GpsState::kUnableToLocate:
+      return F("unable");
+  }
+
+  return F("unknown");
+}
+
+String AppController::buildLocationPayload() const {
+  if (currentGpsState() != GpsState::kLocated) {
+    return String(F("0,0,0"));
   }
 
   return lastFix_.compactPayload;

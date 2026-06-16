@@ -35,6 +35,8 @@ class GpsParser {
   GngllData takeLatestFix();
   const GpsStats& stats() const;
   uint32_t lastValidFixAtMs() const;
+  bool hasSeenAnyData() const;
+  uint32_t firstDataAtMs() const;
 
  private:
   static constexpr size_t kLineBufferSize = 160;
@@ -54,6 +56,8 @@ class GpsParser {
   GngllData latestFix_;
   GpsStats stats_;
   uint32_t lastValidFixAtMs_ = 0;
+  bool hasSeenAnyData_ = false;
+  uint32_t firstDataAtMs_ = 0;
 };
 
 }  // namespace locator

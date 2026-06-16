@@ -365,7 +365,7 @@ void ModemAtClient::handleLine(const String& line) {
 }
 
 void ModemAtClient::parseStatusLine(const String& line) {
-  if (line == "RDY") {
+  if (line.endsWith("RDY")) {
     status_.sawRdy = true;
     refreshStartupReady();
     status_.lastUpdateMs = millis();

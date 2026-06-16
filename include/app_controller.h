@@ -23,15 +23,25 @@ class AppController {
     kRecovery,
   };
 
+  enum class GpsState {
+    kNotStarted,
+    kStartedSearching,
+    kLocated,
+    kUnableToLocate,
+  };
+
   void handleGps();
   void handleModem();
   void handleCompletedCommand(const AtCommandResult& result);
+  bool shouldTreatMqttInitResultAsSuccess(const AtCommandResult& result) const;
   void logModemSummary();
   void beginMqttInitialization();
   void requestNextInitCommand();
   void requestNextMqttCommand();
   void requestNextPeriodicCommand();
   void enterRecovery(const __FlashStringHelper* reason);
+  GpsState currentGpsState() const;
+  const __FlashStringHelper* gpsStateLabel(GpsState state) const;
   String buildLocationPayload() const;
   String buildMqttInitTestPayload() const;
 
@@ -51,6 +61,8 @@ class AppController {
 
   GngllData lastFix_;
   bool hasLastFix_ = false;
+  bool gpsStartedLogged_ = false;
+  bool gpsUnableLogged_ = false;
 };
 
 }  // namespace locator
