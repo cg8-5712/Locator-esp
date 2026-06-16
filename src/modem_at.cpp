@@ -258,10 +258,14 @@ void ModemAtClient::completeCurrentCommand(bool success, bool timedOut) {
   completedCommand_.timedOut = timedOut;
   hasCompletedCommand_ = true;
 
-  if (success && pendingOp_ == ModemOp::kAt) {
-    status_.atResponsive = true;
-    status_.lastHealthCheckAtMs = millis();
-    status_.lastUpdateMs = status_.lastHealthCheckAtMs;
+  if (pendingOp_ == ModemOp::kAt) {
+    if (success) {
+      status_.healthCheckOk = true;
+      status_.lastHealthCheckAtMs = millis();
+      status_.lastUpdateMs = status_.lastHealthCheckAtMs;
+    } else {
+      status_.healthCheckOk = false;
+    }
   }
 
   pendingOp_ = ModemOp::kNone;
@@ -362,6 +366,22 @@ void ModemAtClient::handleLine(const String& line) {
 
 void ModemAtClient::parseStatusLine(const String& line) {
   if (line == "RDY") {
+    status_.sawRdy = true;
+    refreshStartupReady();
+    status_.lastUpdateMs = millis();
+    return;
+  }
+
+  if (line == "SIM_SUCCESS") {
+    status_.simReady = true;
+    refreshStartupReady();
+    status_.lastUpdateMs = millis();
+    return;
+  }
+
+  if (line == "NETWORK_ACTIVATE_SUCCESS") {
+    status_.networkActivated = true;
+    refreshStartupReady();
     status_.lastUpdateMs = millis();
     return;
   }
@@ -398,6 +418,10 @@ void ModemAtClient::parseStatusLine(const String& line) {
     status_.mqttConnected = status_.mqttStatus == 1;
     status_.lastUpdateMs = millis();
   }
+}
+
+void ModemAtClient::refreshStartupReady() {
+  status_.startupReady = status_.sawRdy && status_.simReady && status_.networkActivated;
 }
 
 void ModemAtClient::parseImei(const String& line) {

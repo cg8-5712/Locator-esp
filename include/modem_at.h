@@ -32,7 +32,11 @@ struct AtCommandResult {
 };
 
 struct ModemStatus {
-  bool atResponsive = false;
+  bool startupReady = false;
+  bool sawRdy = false;
+  bool simReady = false;
+  bool networkActivated = false;
+  bool healthCheckOk = false;
   bool networkRegistered = false;
   bool mqttConnected = false;
   int cregMode = -1;
@@ -88,6 +92,7 @@ class ModemAtClient {
   void parseStatusLine(const String& line);
   void parseImei(const String& line);
   void parseFirmwareVersion(const String& line);
+  void refreshStartupReady();
   void parseCreg(const String& line);
   void parseCsq(const String& line);
   void parseIccid(const String& line);

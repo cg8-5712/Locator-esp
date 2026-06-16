@@ -185,11 +185,15 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
       initCommandIndex_++;
 
       if (initCommandIndex_ >= kInitOperationCount) {
-        state_ = State::kInitMqtt;
-        stateEnteredAtMs_ = millis();
-        mqttCommandIndex_ = 0;
-        mqttRetryCount_ = 0;
-        debug_.println(F("[APP] Modem init finished, starting MQTT init"));
+        if (modemClient_.status().startupReady) {
+          state_ = State::kInitMqtt;
+          stateEnteredAtMs_ = millis();
+          mqttCommandIndex_ = 0;
+          mqttRetryCount_ = 0;
+          debug_.println(F("[APP] Modem startup ready, starting MQTT init"));
+        } else {
+          debug_.println(F("[APP] Waiting startup URCs: RDY/SIM_SUCCESS/NETWORK_ACTIVATE_SUCCESS"));
+        }
       }
       return;
     }
@@ -241,10 +245,12 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
 void AppController::logModemSummary() {
   const ModemStatus& status = modemClient_.status();
 
-  debug_.print(F("[STATUS] net="));
-  debug_.print(status.networkRegistered ? F("ready") : F("waiting"));
+  debug_.print(F("[STATUS] startup="));
+  debug_.print(status.startupReady ? F("ready") : F("waiting"));
   debug_.print(F(" health="));
-  debug_.print(status.atResponsive ? F("ok") : F("fail"));
+  debug_.print(status.healthCheckOk ? F("ok") : F("fail"));
+  debug_.print(F(" net="));
+  debug_.print(status.networkRegistered ? F("ready") : F("waiting"));
   debug_.print(F(" creg="));
   debug_.print(status.cregStat);
   debug_.print(F(" csq="));
