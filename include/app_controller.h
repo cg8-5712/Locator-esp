@@ -27,11 +27,13 @@ class AppController {
   void handleModem();
   void handleCompletedCommand(const AtCommandResult& result);
   void logModemSummary();
+  void beginMqttInitialization();
   void requestNextInitCommand();
   void requestNextMqttCommand();
   void requestNextPeriodicCommand();
   void enterRecovery(const __FlashStringHelper* reason);
   String buildLocationPayload() const;
+  String buildMqttInitTestPayload() const;
 
   Stream& debug_;
   GpsParser gpsParser_;

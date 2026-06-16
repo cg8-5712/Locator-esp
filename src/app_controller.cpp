@@ -30,6 +30,45 @@ constexpr ModemOp kPeriodicOperations[] = {
 constexpr size_t kInitOperationCount = sizeof(kInitOperations) / sizeof(kInitOperations[0]);
 constexpr size_t kPeriodicOperationCount =
     sizeof(kPeriodicOperations) / sizeof(kPeriodicOperations[0]);
+constexpr size_t kMqttInitStepCount = 5;
+
+const __FlashStringHelper* deviceInitStepLabel(ModemOp op) {
+  switch (op) {
+    case ModemOp::kAt:
+      return F("AT health check");
+    case ModemOp::kQueryImei:
+      return F("query IMEI");
+    case ModemOp::kQueryFirmwareVersion:
+      return F("query firmware version");
+    case ModemOp::kQueryNetworkRegistration:
+      return F("query network registration");
+    case ModemOp::kQuerySignalQuality:
+      return F("query signal quality");
+    case ModemOp::kQueryIccid:
+      return F("query ICCID");
+    case ModemOp::kQuerySimSlot:
+      return F("query SIM slot");
+    default:
+      return F("unknown");
+  }
+}
+
+const __FlashStringHelper* mqttInitStepLabel(size_t stepIndex) {
+  switch (stepIndex) {
+    case 0:
+      return F("register client info");
+    case 1:
+      return F("configure broker info");
+    case 2:
+      return F("start MQTT session");
+    case 3:
+      return F("verify MQTT connection");
+    case 4:
+      return F("publish startup test message");
+    default:
+      return F("unknown");
+  }
+}
 
 bool startModemOperation(ModemAtClient& modemClient, ModemOp op) {
   switch (op) {
@@ -88,11 +127,17 @@ void AppController::poll() {
       if (now - stateEnteredAtMs_ >= config::kBootDelayMs) {
         state_ = State::kInitModem;
         stateEnteredAtMs_ = now;
-        debug_.println(F("[APP] Starting modem init"));
+        debug_.println(F("[INIT][DEVICE] Starting device initialization"));
       }
       break;
 
     case State::kInitModem:
+      if (initCommandIndex_ >= kInitOperationCount) {
+        if (modemClient_.status().startupReady) {
+          beginMqttInitialization();
+        }
+        break;
+      }
       requestNextInitCommand();
       break;
 
@@ -186,13 +231,10 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
 
       if (initCommandIndex_ >= kInitOperationCount) {
         if (modemClient_.status().startupReady) {
-          state_ = State::kInitMqtt;
-          stateEnteredAtMs_ = millis();
-          mqttCommandIndex_ = 0;
-          mqttRetryCount_ = 0;
-          debug_.println(F("[APP] Modem startup ready, starting MQTT init"));
+          beginMqttInitialization();
         } else {
-          debug_.println(F("[APP] Waiting startup URCs: RDY/SIM_SUCCESS/NETWORK_ACTIVATE_SUCCESS"));
+          debug_.println(
+              F("[INIT][DEVICE] Waiting startup URCs: RDY/SIM_SUCCESS/NETWORK_ACTIVATE_SUCCESS"));
         }
       }
       return;
@@ -200,32 +242,41 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
 
     initRetryCount_++;
     if (initRetryCount_ <= 2) {
-      debug_.print(F("[APP] Retrying init command, attempt "));
+      debug_.print(F("[INIT][DEVICE] Retrying step, attempt "));
       debug_.println(initRetryCount_ + 1);
       return;
     }
 
-    enterRecovery(F("init failed"));
+    enterRecovery(F("device init failed"));
     return;
   }
 
   if (state_ == State::kInitMqtt) {
-    if (result.success) {
+    bool mqttStepSucceeded = result.success;
+    if (result.op == ModemOp::kMqttQueryStatus &&
+        mqttStepSucceeded &&
+        !modemClient_.status().mqttConnected) {
+      mqttStepSucceeded = false;
+      debug_.println(F("[INIT][MQTT] Connection status is not ready yet"));
+    }
+
+    if (mqttStepSucceeded) {
       mqttRetryCount_ = 0;
       mqttCommandIndex_++;
 
-      if (mqttCommandIndex_ >= 4) {
+      if (mqttCommandIndex_ >= kMqttInitStepCount) {
         state_ = State::kRunning;
         stateEnteredAtMs_ = millis();
         lastPublishAtMs_ = 0;
-        debug_.println(F("[APP] MQTT init finished"));
+        debug_.println(F("[INIT][MQTT] MQTT connection initialization finished"));
+        debug_.println(F("[APP] Initialization complete, entering running state"));
       }
       return;
     }
 
     mqttRetryCount_++;
     if (mqttRetryCount_ <= 2) {
-      debug_.print(F("[APP] Retrying MQTT command, attempt "));
+      debug_.print(F("[INIT][MQTT] Retrying step, attempt "));
       debug_.println(mqttRetryCount_ + 1);
       return;
     }
@@ -235,7 +286,9 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
   }
 
   if (state_ == State::kRunning && !result.success) {
-    if (result.op == ModemOp::kQueryNetworkRegistration ||
+    if (result.op == ModemOp::kAt) {
+      debug_.println(F("[APP] Health check failed"));
+    } else if (result.op == ModemOp::kQueryNetworkRegistration ||
         result.op == ModemOp::kQuerySignalQuality) {
       debug_.println(F("[APP] Periodic modem query failed"));
     }
@@ -288,12 +341,23 @@ void AppController::logModemSummary() {
   debug_.println();
 }
 
+void AppController::beginMqttInitialization() {
+  state_ = State::kInitMqtt;
+  stateEnteredAtMs_ = millis();
+  mqttCommandIndex_ = 0;
+  mqttRetryCount_ = 0;
+  debug_.println(F("[INIT][DEVICE] Device initialization finished"));
+  debug_.println(F("[INIT][MQTT] Starting MQTT connection initialization"));
+}
+
 void AppController::requestNextInitCommand() {
   if (!modemClient_.isIdle() || initCommandIndex_ >= kInitOperationCount) {
     return;
   }
 
   const ModemOp op = kInitOperations[initCommandIndex_];
+  debug_.print(F("[INIT][DEVICE] Step: "));
+  debug_.println(deviceInitStepLabel(op));
   if (!startModemOperation(modemClient_, op)) {
     enterRecovery(F("cannot send init command"));
   }
@@ -303,6 +367,9 @@ void AppController::requestNextMqttCommand() {
   if (!modemClient_.isIdle()) {
     return;
   }
+
+  debug_.print(F("[INIT][MQTT] Step: "));
+  debug_.println(mqttInitStepLabel(mqttCommandIndex_));
 
   switch (mqttCommandIndex_) {
     case 0:
@@ -332,6 +399,12 @@ void AppController::requestNextMqttCommand() {
 
     case 3:
       if (!modemClient_.mqttQueryStatus()) {
+        enterRecovery(F("cannot send MQTT init command"));
+      }
+      return;
+
+    case 4:
+      if (!modemClient_.mqttPublish(config::kMqttTestTopic, buildMqttInitTestPayload())) {
         enterRecovery(F("cannot send MQTT init command"));
       }
       return;
@@ -395,6 +468,12 @@ String AppController::buildLocationPayload() const {
   }
 
   return lastFix_.compactPayload;
+}
+
+String AppController::buildMqttInitTestPayload() const {
+  String payload = "test+";
+  payload += config::kDeviceName;
+  return payload;
 }
 
 }  // namespace locator
