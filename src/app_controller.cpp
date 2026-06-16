@@ -11,25 +11,11 @@ constexpr ModemOp kInitOperations[] = {
     ModemOp::kQueryImei,
     ModemOp::kQueryFirmwareVersion,
     ModemOp::kQueryNetworkRegistration,
-    ModemOp::kQuerySignalQuality,
     ModemOp::kQueryIccid,
     ModemOp::kQuerySimSlot,
-};
-
-constexpr ModemOp kPeriodicOperations[] = {
-    ModemOp::kAt,
-    ModemOp::kQueryImei,
-    ModemOp::kQueryFirmwareVersion,
-    ModemOp::kQueryNetworkRegistration,
-    ModemOp::kQuerySignalQuality,
-    ModemOp::kQueryIccid,
-    ModemOp::kQuerySimSlot,
-    ModemOp::kMqttQueryStatus,
 };
 
 constexpr size_t kInitOperationCount = sizeof(kInitOperations) / sizeof(kInitOperations[0]);
-constexpr size_t kPeriodicOperationCount =
-    sizeof(kPeriodicOperations) / sizeof(kPeriodicOperations[0]);
 constexpr size_t kMqttInitStepCount = 5;
 
 const __FlashStringHelper* deviceInitStepLabel(ModemOp op) {
@@ -42,8 +28,6 @@ const __FlashStringHelper* deviceInitStepLabel(ModemOp op) {
       return F("query firmware version");
     case ModemOp::kQueryNetworkRegistration:
       return F("query network registration");
-    case ModemOp::kQuerySignalQuality:
-      return F("query signal quality");
     case ModemOp::kQueryIccid:
       return F("query ICCID");
     case ModemOp::kQuerySimSlot:
@@ -80,14 +64,10 @@ bool startModemOperation(ModemAtClient& modemClient, ModemOp op) {
       return modemClient.queryFirmwareVersion();
     case ModemOp::kQueryNetworkRegistration:
       return modemClient.queryNetworkRegistration();
-    case ModemOp::kQuerySignalQuality:
-      return modemClient.querySignalQuality();
     case ModemOp::kQueryIccid:
       return modemClient.queryIccid();
     case ModemOp::kQuerySimSlot:
       return modemClient.querySimSlot();
-    case ModemOp::kMqttQueryStatus:
-      return modemClient.mqttQueryStatus();
     default:
       return false;
   }
@@ -106,9 +86,9 @@ void AppController::begin() {
   stateEnteredAtMs_ = millis();
   lastStatusPrintAtMs_ = millis();
   lastGpsHeartbeatAtMs_ = millis();
+  lastHealthCheckAtMs_ = 0;
   initCommandIndex_ = 0;
   mqttCommandIndex_ = 0;
-  periodicCommandIndex_ = 0;
   initRetryCount_ = 0;
   mqttRetryCount_ = 0;
   lastPublishAtMs_ = 0;
@@ -160,6 +140,7 @@ void AppController::poll() {
         initRetryCount_ = 0;
         mqttCommandIndex_ = 0;
         mqttRetryCount_ = 0;
+        lastHealthCheckAtMs_ = 0;
       }
       break;
   }
@@ -304,9 +285,6 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
   if (state_ == State::kRunning && !result.success) {
     if (result.op == ModemOp::kAt) {
       debug_.println(F("[APP] Health check failed"));
-    } else if (result.op == ModemOp::kQueryNetworkRegistration ||
-        result.op == ModemOp::kQuerySignalQuality) {
-      debug_.println(F("[APP] Periodic modem query failed"));
     }
   }
 }
@@ -433,8 +411,6 @@ void AppController::requestNextMqttCommand() {
 }
 
 void AppController::requestNextPeriodicCommand() {
-  static uint32_t lastPeriodicRequestAtMs = 0;
-
   if (!modemClient_.isIdle()) {
     return;
   }
@@ -452,17 +428,16 @@ void AppController::requestNextPeriodicCommand() {
     return;
   }
 
-  if (now - lastPeriodicRequestAtMs < 5000) {
+  if (now - lastHealthCheckAtMs_ < config::kModemHealthCheckIntervalMs) {
     return;
   }
 
-  lastPeriodicRequestAtMs = now;
-  const ModemOp op = kPeriodicOperations[periodicCommandIndex_];
-  periodicCommandIndex_ = (periodicCommandIndex_ + 1) % kPeriodicOperationCount;
-
-  if (!startModemOperation(modemClient_, op)) {
-    enterRecovery(F("cannot send periodic command"));
+  if (!modemClient_.ping()) {
+    enterRecovery(F("cannot send health check"));
+    return;
   }
+
+  lastHealthCheckAtMs_ = now;
 }
 
 void AppController::enterRecovery(const __FlashStringHelper* reason) {
@@ -474,6 +449,7 @@ void AppController::enterRecovery(const __FlashStringHelper* reason) {
   initRetryCount_ = 0;
   mqttCommandIndex_ = 0;
   mqttRetryCount_ = 0;
+  lastHealthCheckAtMs_ = 0;
 }
 
 bool AppController::shouldTreatMqttInitResultAsSuccess(const AtCommandResult& result) const {

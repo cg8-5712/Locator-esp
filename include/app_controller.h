@@ -52,9 +52,9 @@ class AppController {
   uint32_t stateEnteredAtMs_ = 0;
   uint32_t lastStatusPrintAtMs_ = 0;
   uint32_t lastGpsHeartbeatAtMs_ = 0;
+  uint32_t lastHealthCheckAtMs_ = 0;
   size_t initCommandIndex_ = 0;
   size_t mqttCommandIndex_ = 0;
-  size_t periodicCommandIndex_ = 0;
   uint8_t initRetryCount_ = 0;
   uint8_t mqttRetryCount_ = 0;
   uint32_t lastPublishAtMs_ = 0;

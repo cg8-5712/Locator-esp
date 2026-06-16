@@ -39,6 +39,7 @@ static constexpr uint32_t kStatusPrintIntervalMs = 10000;
 static constexpr uint32_t kGpsHeartbeatIntervalMs = 5000;
 static constexpr uint32_t kGpsStaleAfterMs = 15000;
 static constexpr uint32_t kGpsUnableToLocateAfterMs = 30000;
+static constexpr uint32_t kModemHealthCheckIntervalMs = 30000;
 
 static constexpr const char* kDeviceName = "locator-esp32s3-001";
 static constexpr const char* kMqttClientId = kDeviceName;
