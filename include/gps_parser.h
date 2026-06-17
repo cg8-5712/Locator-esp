@@ -35,6 +35,7 @@ class GpsParser {
   GngllData takeLatestFix();
   const GpsStats& stats() const;
   uint32_t lastValidFixAtMs() const;
+  uint32_t lastDataAtMs() const;
   bool hasSeenAnyData() const;
   uint32_t firstDataAtMs() const;
 
@@ -56,6 +57,7 @@ class GpsParser {
   GngllData latestFix_;
   GpsStats stats_;
   uint32_t lastValidFixAtMs_ = 0;
+  uint32_t lastDataAtMs_ = 0;
   bool hasSeenAnyData_ = false;
   uint32_t firstDataAtMs_ = 0;
 };

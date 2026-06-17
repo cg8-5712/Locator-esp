@@ -28,6 +28,15 @@ uint8_t hexPairToByte(const char high, const char low) {
 
 void GpsParser::begin(Stream& stream) {
   stream_ = &stream;
+  lineLength_ = 0;
+  droppingLine_ = false;
+  hasNewFix_ = false;
+  latestFix_ = GngllData();
+  stats_ = GpsStats();
+  lastValidFixAtMs_ = 0;
+  lastDataAtMs_ = 0;
+  hasSeenAnyData_ = false;
+  firstDataAtMs_ = 0;
 }
 
 void GpsParser::poll() {
@@ -37,9 +46,10 @@ void GpsParser::poll() {
 
   while (stream_->available() > 0) {
     const char c = static_cast<char>(stream_->read());
+    lastDataAtMs_ = millis();
     if (!hasSeenAnyData_) {
       hasSeenAnyData_ = true;
-      firstDataAtMs_ = millis();
+      firstDataAtMs_ = lastDataAtMs_;
     }
 
     if (c == '\r' || c == '\n') {
@@ -89,6 +99,10 @@ const GpsStats& GpsParser::stats() const {
 
 uint32_t GpsParser::lastValidFixAtMs() const {
   return lastValidFixAtMs_;
+}
+
+uint32_t GpsParser::lastDataAtMs() const {
+  return lastDataAtMs_;
 }
 
 bool GpsParser::hasSeenAnyData() const {

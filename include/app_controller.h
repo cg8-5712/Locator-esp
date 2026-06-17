@@ -25,6 +25,7 @@ class AppController {
 
   enum class GpsState {
     kNotStarted,
+    kOffline,
     kStartedSearching,
     kLocated,
     kUnableToLocate,

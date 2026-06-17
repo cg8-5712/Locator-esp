@@ -553,6 +553,10 @@ AppController::GpsState AppController::currentGpsState() const {
     return GpsState::kNotStarted;
   }
 
+  if (millis() - gpsParser_.lastDataAtMs() > config::kGpsOfflineAfterMs) {
+    return GpsState::kOffline;
+  }
+
   if (hasLastFix_ && millis() - gpsParser_.lastValidFixAtMs() <= config::kGpsStaleAfterMs) {
     return GpsState::kLocated;
   }
@@ -568,6 +572,8 @@ const __FlashStringHelper* AppController::gpsStateLabel(GpsState state) const {
   switch (state) {
     case GpsState::kNotStarted:
       return F("not_started");
+    case GpsState::kOffline:
+      return F("offline");
     case GpsState::kStartedSearching:
       return F("searching");
     case GpsState::kLocated:

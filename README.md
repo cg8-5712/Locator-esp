@@ -86,6 +86,9 @@ Device-side GPS states:
 
 - `not_started`
   No GPS serial data has been seen yet.
+- `offline`
+  GPS had produced serial data before, but no new UART data has been received within the
+  configured offline timeout.
 - `searching`
   GPS serial data is flowing, but no valid fix is available yet.
 - `located`
@@ -191,6 +194,8 @@ touching runtime logic.
 
 Important parameters:
 
+- `kGpsOfflineAfterMs`
+  How long GPS UART can stay silent before the state becomes `offline`.
 - `kGpsUnableToLocateAfterMs`
   Maximum time to wait before GPS enters `unable`.
 - `kGpsStaleAfterMs`
