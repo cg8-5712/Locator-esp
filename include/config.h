@@ -19,6 +19,7 @@ enum class MonitorTarget : uint8_t {
 static constexpr uint32_t kDebugBaudRate = 115200;
 static constexpr uint32_t kGpsBaudRate = 9600;
 static constexpr uint32_t kModemBaudRate = 115200;
+static constexpr const char* kFirmwareVersion = __DATE__ " " __TIME__;
 
 // Switch between the regular app and a serial diagnostics firmware.
 // kDebugMonitor is the recommended mode while debugging UART issues.

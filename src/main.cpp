@@ -20,6 +20,8 @@ void setup() {
 
   Serial.println();
   Serial.println(F("locator boot"));
+  Serial.print(F("firmware version = "));
+  Serial.println(locator::config::kFirmwareVersion);
   Serial.print(F("4G UART RX/TX = "));
   Serial.print(locator::config::kModemRxPin);
   Serial.print(F("/"));
