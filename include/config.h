@@ -45,8 +45,29 @@ static constexpr uint32_t kRecoveryDelayMs = 3000;
 static constexpr uint32_t kStatusPrintIntervalMs = 10000;
 static constexpr uint32_t kGpsHeartbeatIntervalMs = 5000;
 static constexpr uint32_t kGpsStaleAfterMs = 15000;
+
+// Runtime health / reporting cadence.
 static constexpr uint32_t kGpsUnableToLocateAfterMs = 30000;
 static constexpr uint32_t kModemHealthCheckIntervalMs = 30000;
+static constexpr uint32_t kMqttPublishIntervalMs = 30000;
+
+// Compact location reporting policy.
+static constexpr uint32_t kLocationStillDistanceThresholdMeters = 30;
+static constexpr uint32_t kLocationMovementThresholdMeters = 30;
+static constexpr uint32_t kLocationStillConfirmMs = 300000;
+static constexpr uint32_t kLocationStillKeepaliveMs = 900000;
+static constexpr uint32_t kLocationNoFixKeepaliveMs = 900000;
+static constexpr uint32_t kLocationFullResyncMs = 3600000;
+
+// Compact payload markers used by the device and expected by the backend.
+static constexpr const char* kReportFullPrefix = "F:";
+static constexpr const char* kReportStillPrefix = "S:";
+static constexpr const char* kReportNoFixPrefix = "Z:";
+static constexpr const char* kLocationZeroPayload = "0,0,0";
+
+// Future management platform support: compile-time defaults can later be
+// overridden by MQTT-delivered runtime configuration.
+static constexpr bool kEnableRemoteConfigOverride = false;
 
 static constexpr const char* kDeviceName = "locator-esp32s3-001";
 static constexpr const char* kMqttClientId = kDeviceName;
@@ -57,9 +78,10 @@ static constexpr uint16_t kMqttPort = 1883;
 static constexpr bool kMqttAutoReconnect = true;
 static constexpr uint8_t kMqttCleanSession = 1;
 static constexpr uint16_t kMqttKeepAliveSeconds = 30;
-static constexpr uint32_t kMqttPublishIntervalMs = 30000;
 static constexpr const char* kMqttLocationTopic = "locator/locator-esp32s3-001/location";
 static constexpr const char* kMqttTestTopic = "locator/locator-esp32s3-001/test";
+static constexpr const char* kMqttStatusTopic = "locator/locator-esp32s3-001/status";
+static constexpr const char* kMqttConfigTopic = "locator/locator-esp32s3-001/config";
 
 }  // namespace config
 }  // namespace locator

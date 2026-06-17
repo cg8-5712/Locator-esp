@@ -6,6 +6,8 @@ namespace locator {
 
 namespace {
 
+constexpr float kEarthRadiusMeters = 6371000.0f;
+
 constexpr ModemOp kInitOperations[] = {
     ModemOp::kAt,
     ModemOp::kQueryImei,
@@ -92,8 +94,15 @@ void AppController::begin() {
   initRetryCount_ = 0;
   mqttRetryCount_ = 0;
   lastPublishAtMs_ = 0;
+  lastFullReportAtMs_ = 0;
+  lastStillReportAtMs_ = 0;
+  lastNoFixReportAtMs_ = 0;
+  stationarySinceMs_ = 0;
+  lastReportKind_ = ReportKind::kNone;
   gpsStartedLogged_ = false;
   gpsUnableLogged_ = false;
+  hasLastFix_ = false;
+  hasLastReportedFix_ = false;
 
   if (isDetailedLoggingEnabled()) {
     debug_.println(F("[APP] Boot delay started"));
@@ -147,6 +156,13 @@ void AppController::poll() {
         mqttCommandIndex_ = 0;
         mqttRetryCount_ = 0;
         lastHealthCheckAtMs_ = 0;
+        lastFullReportAtMs_ = 0;
+        lastStillReportAtMs_ = 0;
+        lastNoFixReportAtMs_ = 0;
+        stationarySinceMs_ = 0;
+        lastReportKind_ = ReportKind::kNone;
+        hasLastFix_ = false;
+        hasLastReportedFix_ = false;
       }
       break;
   }
@@ -170,6 +186,10 @@ void AppController::handleGps() {
     lastFix_ = gpsParser_.takeLatestFix();
     hasLastFix_ = true;
     gpsUnableLogged_ = false;
+
+    if (stationarySinceMs_ == 0 || !hasLastReportedFix_ || hasMovementBeyondThreshold()) {
+      stationarySinceMs_ = millis();
+    }
 
     if (isDetailedLoggingEnabled()) {
       debug_.print(F("[GPS] Valid GNGLL: "));
@@ -357,7 +377,7 @@ void AppController::logModemSummary() {
     }
   }
 
-  if (hasLastFix_) {
+  if (isDetailedLoggingEnabled() && hasLastFix_) {
     debug_.print(F(" last_fix="));
     debug_.print(lastFix_.compactPayload);
   }
@@ -453,9 +473,26 @@ void AppController::requestNextPeriodicCommand() {
   const uint32_t now = millis();
   const bool shouldPublish = now - lastPublishAtMs_ >= config::kMqttPublishIntervalMs;
   if (shouldPublish && modemClient_.status().mqttConnected) {
-    const String payload = buildLocationPayload();
+    const ReportKind reportKind = determineNextReportKind(now);
+    if (reportKind == ReportKind::kNone) {
+      lastPublishAtMs_ = now;
+      return;
+    }
+
+    const String payload = buildReportPayload(reportKind, now);
     if (modemClient_.mqttPublish(config::kMqttLocationTopic, payload)) {
       lastPublishAtMs_ = now;
+      lastReportKind_ = reportKind;
+
+      if (reportKind == ReportKind::kFull) {
+        lastFullReportAtMs_ = now;
+        lastReportedFix_ = lastFix_;
+        hasLastReportedFix_ = true;
+      } else if (reportKind == ReportKind::kStill) {
+        lastStillReportAtMs_ = now;
+      } else if (reportKind == ReportKind::kNoFix) {
+        lastNoFixReportAtMs_ = now;
+      }
       return;
     }
 
@@ -487,6 +524,13 @@ void AppController::enterRecovery(const __FlashStringHelper* reason) {
   mqttCommandIndex_ = 0;
   mqttRetryCount_ = 0;
   lastHealthCheckAtMs_ = 0;
+  lastFullReportAtMs_ = 0;
+  lastStillReportAtMs_ = 0;
+  lastNoFixReportAtMs_ = 0;
+  stationarySinceMs_ = 0;
+  lastReportKind_ = ReportKind::kNone;
+  hasLastFix_ = false;
+  hasLastReportedFix_ = false;
 }
 
 bool AppController::shouldTreatMqttInitResultAsSuccess(const AtCommandResult& result) const {
@@ -537,10 +581,109 @@ const __FlashStringHelper* AppController::gpsStateLabel(GpsState state) const {
 
 String AppController::buildLocationPayload() const {
   if (currentGpsState() != GpsState::kLocated) {
-    return String(F("0,0,0"));
+    return String(config::kLocationZeroPayload);
   }
 
   return lastFix_.compactPayload;
+}
+
+AppController::ReportKind AppController::determineNextReportKind(uint32_t now) const {
+  const GpsState gpsState = currentGpsState();
+  if (gpsState != GpsState::kLocated) {
+    if (lastReportKind_ != ReportKind::kNoFix ||
+        now - lastNoFixReportAtMs_ >= config::kLocationNoFixKeepaliveMs) {
+      return ReportKind::kNoFix;
+    }
+    return ReportKind::kNone;
+  }
+
+  const bool moved = hasMovementBeyondThreshold();
+  if (!hasLastReportedFix_ || moved ||
+      lastReportKind_ == ReportKind::kNoFix ||
+      now - lastFullReportAtMs_ >= config::kLocationFullResyncMs) {
+    return ReportKind::kFull;
+  }
+
+  if (stationarySinceMs_ != 0 && isWithinStillDistanceThreshold() &&
+      now - stationarySinceMs_ >= config::kLocationStillConfirmMs &&
+      (lastReportKind_ != ReportKind::kStill ||
+       now - lastStillReportAtMs_ >= config::kLocationStillKeepaliveMs)) {
+    return ReportKind::kStill;
+  }
+
+  return ReportKind::kNone;
+}
+
+float AppController::distanceMeters(const GngllData& a, const GngllData& b) const {
+  const auto parseDegrees = [](const String& value, char hemisphere) -> float {
+    const float raw = value.toFloat();
+    const int degrees = static_cast<int>(raw / 100.0f);
+    const float minutes = raw - static_cast<float>(degrees) * 100.0f;
+    float decimalDegrees = static_cast<float>(degrees) + minutes / 60.0f;
+    if (hemisphere == 'S' || hemisphere == 'W') {
+      decimalDegrees = -decimalDegrees;
+    }
+    return decimalDegrees;
+  };
+
+  const float lat1 = parseDegrees(a.latitude, a.latitudeHemisphere) * PI / 180.0f;
+  const float lon1 = parseDegrees(a.longitude, a.longitudeHemisphere) * PI / 180.0f;
+  const float lat2 = parseDegrees(b.latitude, b.latitudeHemisphere) * PI / 180.0f;
+  const float lon2 = parseDegrees(b.longitude, b.longitudeHemisphere) * PI / 180.0f;
+
+  const float dLat = lat2 - lat1;
+  const float dLon = lon2 - lon1;
+  const float sinLat = sinf(dLat / 2.0f);
+  const float sinLon = sinf(dLon / 2.0f);
+  const float aTerm = sinLat * sinLat + cosf(lat1) * cosf(lat2) * sinLon * sinLon;
+  const float cTerm = 2.0f * atan2f(sqrtf(aTerm), sqrtf(1.0f - aTerm));
+  return kEarthRadiusMeters * cTerm;
+}
+
+bool AppController::hasMovementBeyondThreshold() const {
+  if (!hasLastFix_ || !hasLastReportedFix_) {
+    return true;
+  }
+
+  return distanceMeters(lastFix_, lastReportedFix_) >=
+         static_cast<float>(config::kLocationMovementThresholdMeters);
+}
+
+bool AppController::isWithinStillDistanceThreshold() const {
+  if (!hasLastFix_ || !hasLastReportedFix_) {
+    return false;
+  }
+
+  return distanceMeters(lastFix_, lastReportedFix_) <=
+         static_cast<float>(config::kLocationStillDistanceThresholdMeters);
+}
+
+uint32_t AppController::stillDurationSeconds(uint32_t now) const {
+  if (stationarySinceMs_ == 0 || now < stationarySinceMs_) {
+    return 0;
+  }
+
+  return (now - stationarySinceMs_) / 1000;
+}
+
+String AppController::buildReportPayload(ReportKind kind, uint32_t now) const {
+  switch (kind) {
+    case ReportKind::kFull: {
+      String payload = config::kReportFullPrefix;
+      payload += buildLocationPayload();
+      return payload;
+    }
+    case ReportKind::kStill: {
+      String payload = config::kReportStillPrefix;
+      payload += String(stillDurationSeconds(now));
+      return payload;
+    }
+    case ReportKind::kNoFix:
+      return String(config::kReportNoFixPrefix) + "0";
+    case ReportKind::kNone:
+    default:
+      return String();
+  }
 }
 
 String AppController::buildMqttInitTestPayload() const {

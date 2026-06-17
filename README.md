@@ -1,146 +1,279 @@
 # ESP32-S3 4G GPS Locator
 
-## 项目概述
+## Overview
 
-本项目使用 `ESP32-S3` 作为主控，外挂一个 `GPS` 模块和一个 `4G` 模块，实现低带宽定位器。
+This project runs on `ESP32-S3` and connects to one GPS module and one 4G modem over UART.
+The device reads GPS NMEA data, extracts valid `$GNGLL` location data, and reports compact
+location messages to the server through the modem's built-in MQTT AT commands.
 
-核心目标如下：
-
-- 从 GPS 模块串口连续读取 NMEA 语句。
-- 每秒从多条 NMEA 数据中筛选 `$GNGLL`。
-- 对原始 `$GNGLL` 语句执行标准 NMEA 校验。
-- 将有效数据整理为紧凑上报格式：
-  `3956.20359N,11622.44467E,090353AA*4C`
-- 通过 4G 模块的 AT 指令 MQTT 能力发布到服务器。
-- 支持远程查看部分 4G 模块状态，例如 `ICCID`、`SIM 卡槽`、`注册状态`、`信号质量`、`MQTT 连接状态`。
-
-项目当前是一个 `PlatformIO + Arduino` 工程，目标板来自现有配置：
+The current project is a `PlatformIO + Arduino` firmware with:
 
 - `platform = espressif32`
 - `board = esp32-s3-devkitc-1`
 - `framework = arduino`
 
-## 硬件组成
+## Runtime Architecture
 
-- MCU：ESP32-S3
-- GNSS：输出 NMEA 的 GPS 模块
-- Cellular：支持 AT 指令与 MQTT 的 4G 模块
-- 通信方式：
-  - ESP32-S3 <-> GPS：UART
-  - ESP32-S3 <-> 4G 模块：UART
+The code is intentionally split into clear layers:
 
-建议硬件控制信号：
+- `src/gps_parser.*`
+  Parses NMEA input, validates checksum, and extracts compact location payloads.
+- `src/modem_at.*`
+  Owns all modem AT commands and wraps them as semantic methods.
+- `src/app_controller.*`
+  Drives initialization, health checking, GPS state tracking, and MQTT publishing.
+- `include/config.h`
+  Central place for device pins, timing, MQTT defaults, log level, and location policy.
 
-- 4G 模块 `PWRKEY` 或开机控制脚
-- 4G 模块 `RESET` 脚
-- 可选网络状态脚
-- 可选 GPS `PPS` 脚
+`AppController` should not construct raw AT strings. It only calls semantic methods from
+`ModemAtClient`, which keeps modem behavior isolated and easier to maintain.
 
-## 数据流
+## Initialization Stages
 
-1. GPS 模块每秒输出 NMEA 数据。
-2. ESP32-S3 按行读取完整语句，优先筛选 `$GNGLL`。
-3. 先对原始 `$GNGLL` 做 NMEA XOR 校验。
-4. 校验通过后提取字段并整理为业务上报字符串。
-5. ESP32-S3 通过 4G 模块 AT 指令检查联网状态和 MQTT 状态。
-6. 通过 `AT+QMTPUB` 将定位结果发布到服务器。
-7. 周期性或按远程指令上报 4G 模块状态信息。
+Initialization is split into two visible stages in logs and in the internal state machine.
 
-## GPS 样例与目标格式
+### 1. Device Initialization
 
-原始 `$GNGLL` 样例：
+This stage checks the modem itself and reads static device information.
+
+Expected startup URCs:
+
+- `RDY`
+- `SIM_SUCCESS`
+- `NETWORK_ACTIVATE_SUCCESS`
+
+Startup is considered ready only after all three are observed.
+
+During device initialization, the firmware performs:
+
+- `AT`
+  Health check. Success is `OK`.
+- `AT+GSN`
+  Query IMEI.
+- `AT+GMR`
+  Query modem firmware version.
+- `AT+CREG?`
+  Query network registration state.
+- `AT+QCCID`
+  Query ICCID.
+- `AT+SINGLESIM?`
+  Query SIM slot.
+
+### 2. MQTT Connection Initialization
+
+This stage prepares the MQTT session and only succeeds when the end-to-end path is usable.
+
+Sequence:
+
+1. Register MQTT client information.
+2. Configure MQTT broker information.
+3. Start MQTT session.
+4. Verify MQTT status.
+5. Publish one startup test message: `test+<device_name>`.
+
+Only after all five steps succeed is initialization considered complete.
+
+Special handling:
+
+- `AT+QMTCONNCFG` returning `ERROR=202` is treated as reusable existing broker config.
+- MQTT status must indicate connected before runtime reporting starts.
+
+## GPS State Model
+
+GPS startup and GPS location are treated as different concepts.
+
+Device-side GPS states:
+
+- `not_started`
+  No GPS serial data has been seen yet.
+- `searching`
+  GPS serial data is flowing, but no valid fix is available yet.
+- `located`
+  A valid fix is available and not stale.
+- `unable`
+  GPS data is flowing, but no valid fix was obtained within the configured timeout.
+
+Rules:
+
+- "GPS started successfully" means serial data is being received.
+- "GPS located successfully" means there is a valid recent fix.
+- If GPS cannot locate within the configured timeout, the device still keeps running and
+  reports zero payloads instead of blocking the whole application.
+
+## Reporting Protocol
+
+To reduce traffic, power use, and backend storage pressure, location publishing is compact and
+state-aware rather than sending the same full point every cycle.
+
+The location topic payload uses three packet types:
+
+- `F:<full_payload>`
+  Full location payload. Used for first valid fix, movement, or periodic resync.
+- `S:<still_seconds>`
+  Still-state keepalive. Used when the device remains near the same place long enough.
+- `Z:0`
+  No-fix keepalive. Used when GPS is not currently located.
+
+Examples:
 
 ```text
-$GNGLL,3956.20359,N,11622.44467,E,090353.000,A,A*4C
+F:3956.20359N,11622.44467E,090353AA*4C
+S:600
+Z:0
 ```
 
-目标上报格式：
+### Full Packet `F:`
 
-```text
-3956.20359N,11622.44467E,090353AA*4C
-```
+Sent when any of the following is true:
 
-整理规则：
+- The device gets its first valid fix.
+- The device moved beyond the configured movement threshold.
+- The last published state was `Z:0` and GPS has recovered.
+- The periodic full resync interval has been reached.
 
-- 保留纬度数值 `3956.20359`，并把方向位 `N` 拼接到其后。
-- 保留经度数值 `11622.44467`，并把方向位 `E` 拼接到其后。
-- UTC 时间 `090353.000` 截断为 `090353`。
-- 保留定位状态 `A`。
-- 保留模式字段 `A`。
-- 保留原始 NMEA 语句中的校验码 `*4C`。
+### Still Packet `S:`
 
-注意：
+Sent when all of the following are true:
 
-- `*4C` 对应的是原始 `$GNGLL` 语句的 NMEA 校验结果。
-- 业务字符串删除了部分逗号和字符后，已经不再是标准 NMEA 语句，因此不能再用原始 NMEA 规则对整理后的整串重新校验。
-- 正确做法是：先校验原始语句，再进行格式整理。
+- GPS is located.
+- The current position remains within the configured still-distance threshold.
+- The still-confirm time has been reached.
+- The still keepalive interval is due.
 
-## 4G 模块侧能力
+`S:<still_seconds>` means the backend should continue the previous full-position segment and
+extend the stationary duration by the provided number of seconds.
 
-本项目优先使用模块内置 MQTT 指令，而不是自行通过 `QIOPEN` 建 TCP 再手工封装 MQTT。
+### No-Fix Packet `Z:0`
 
-已确认需要使用的 AT 能力：
+Sent when GPS is not currently located and the no-fix keepalive interval is due.
 
-- `AT+QCCID`：查询 SIM ICCID
-- `AT+SINGLESIM?` / `AT+SINGLESIM=<id>`：查询或切换 SIM 卡槽
-- `AT+CREG?`：查询网络注册状态
-- `AT+CSQ`：查询信号质量
-- `AT+QMTCFG`：配置 MQTT 客户端
-- `AT+QMTCONNCFG`：配置 MQTT 服务器
-- `AT+QMTSTART`：设置会话与心跳
-- `AT+QMTSUB`：订阅主题
-- `AT+QMTPUB` / `AT+QMTPUBEX`：发布消息
-- `AT+QMTSTATU`：查询 MQTT 状态
-- `AT+QMTDISC`：断开 MQTT
+Backend interpretation:
 
-`QIOPEN/QISEND/QICLOSE` 可作为后续原始 TCP/UDP 方案备用，不作为主链路。
+- `Z:0` means "device is alive, MQTT is alive, but location is unavailable now".
+- Backend should not create a fake location point from `Z:0`.
+- If a later `F:` arrives, backend should start a new valid location segment from that packet.
 
-## 推荐 MQTT 主题
+## Backend Aggregation Guidance
 
-建议至少保留三个主题：
+The backend or management platform should not store every publish as an independent raw point.
+Recommended behavior:
 
-- 上报定位：`locator/<device_id>/location`
-- 上报状态：`locator/<device_id>/status`
-- 下行指令：`locator/<device_id>/cmd`
+- For `F:...`
+  Start a new location segment or update the current moving point.
+- For `S:...`
+  Extend the previous location segment's stationary duration instead of inserting another full point.
+- For `Z:0`
+  Record device alive / no-fix state, but do not insert a normal coordinate record.
 
-建议：
+This approach reduces:
 
-- 定位主题发送紧凑字符串，降低流量。
-- 状态主题发送 JSON，方便排查与远程运维。
+- MQTT traffic
+- modem active time
+- battery consumption
+- database write count
+- repeated duplicate coordinates
 
-## 远程可查看信息
+## Log Levels
 
-建议远程提供以下信息：
+Log output is controlled by `include/config.h`.
 
-- `iccid`
-- `sim_slot`
-- `creg_stat`
-- `csq_rssi`
-- `csq_ber`
-- `mqtt_status`
-- 最近一次有效定位时间
-- 最近一次定位字符串
+- `AppLogLevel::kApp`
+  Production mode. Only prints initialization success/failure and periodic `[STATUS]`.
+- `AppLogLevel::kDebug`
+  Prints detailed AT, URC, GPS, and step-by-step initialization logs.
 
-## 建议的软件结构
+This is intended to reduce UART log overhead in deployed devices and improve battery life.
 
-后续源码建议拆分为以下模块：
+## Configurable Parameters
 
-- `src/main.cpp`：启动入口
-- `src/gps_parser.*`：NMEA 采集、筛选、校验、转换
-- `src/modem_at.*`：AT 指令发送与响应解析
-- `src/mqtt_client.*`：MQTT 配置、连接、发布、订阅
-- `src/app_controller.*`：状态机与任务调度
-- `include/config.h`：串口、引脚、APN、MQTT 参数
+All current policy thresholds are defined in `include/config.h` so they can be adjusted without
+touching runtime logic.
 
-## 开发里程碑
+Important parameters:
 
-1. 打通 GPS 串口读取与 `$GNGLL` 校验。
-2. 打通 4G 模块联网与 MQTT 连接。
-3. 周期上报定位字符串。
-4. 增加状态主题与远程查询能力。
-5. 增加异常恢复与重连策略。
+- `kGpsUnableToLocateAfterMs`
+  Maximum time to wait before GPS enters `unable`.
+- `kGpsStaleAfterMs`
+  How long a previous fix is considered fresh.
+- `kModemHealthCheckIntervalMs`
+  Interval for runtime modem health checks using `AT`.
+- `kMqttPublishIntervalMs`
+  Base report scheduling interval.
+- `kLocationMovementThresholdMeters`
+  Movement threshold that triggers a new `F:` packet.
+- `kLocationStillDistanceThresholdMeters`
+  Distance limit for considering the device still stationary.
+- `kLocationStillConfirmMs`
+  How long the position must stay still before `S:` is allowed.
+- `kLocationStillKeepaliveMs`
+  How often to repeat `S:` while still stationary.
+- `kLocationNoFixKeepaliveMs`
+  How often to repeat `Z:0` while no fix is available.
+- `kLocationFullResyncMs`
+  Maximum interval before forcing another full `F:` packet.
 
-## 相关文档
+Protocol constants are also centralized:
 
-- 协作约束见 `codex.md`
-- 详细实现说明见 `docs/technical-guide.md`
+- `kReportFullPrefix`
+- `kReportStillPrefix`
+- `kReportNoFixPrefix`
+- `kLocationZeroPayload`
+
+## Future Remote Configuration
+
+The current firmware uses compile-time defaults from `include/config.h`, but the design should
+support MQTT-delivered runtime overrides later.
+
+Reserved direction:
+
+- status reporting topic: `kMqttStatusTopic`
+- config downlink topic: `kMqttConfigTopic`
+- switch: `kEnableRemoteConfigOverride`
+
+Expected future remote-config scope:
+
+- publish interval
+- no-fix timeout
+- still-distance threshold
+- still-confirm duration
+- still keepalive interval
+- no-fix keepalive interval
+- full resync interval
+- movement threshold
+- log level
+
+Recommended principle:
+
+- `config.h` holds factory defaults.
+- MQTT management platform can deliver overrides.
+- device should acknowledge applied values and report effective configuration back.
+
+## Current Runtime Polling Policy
+
+To reduce unnecessary modem activity, runtime polling is intentionally minimal.
+
+Runtime loop should only do:
+
+- periodic modem health check through `AT`
+- periodic MQTT publish according to the compact reporting strategy
+
+The following items are treated as init-time or on-demand information and should not be polled
+continuously during normal running:
+
+- IMEI
+- modem firmware version
+- ICCID
+- SIM slot
+- network registration details
+- MQTT diagnostic details
+
+`CSQ` should be queried only when there is a specific request for signal quality.
+
+## Build Version
+
+`include/config.h` exposes:
+
+- `kFirmwareVersion = __DATE__ " " __TIME__`
+
+This is printed at boot and included in status output so field logs can be matched to the exact
+binary that is currently flashed.
