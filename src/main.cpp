@@ -22,16 +22,19 @@ void setup() {
   Serial.println(F("locator boot"));
   Serial.print(F("firmware version = "));
   Serial.println(locator::config::kFirmwareVersion);
-  Serial.print(F("4G UART RX/TX = "));
-  Serial.print(locator::config::kModemRxPin);
-  Serial.print(F("/"));
-  Serial.println(locator::config::kModemTxPin);
-  Serial.print(F("GPS UART RX/TX = "));
-  Serial.print(locator::config::kGpsRxPin);
-  Serial.print(F("/"));
-  Serial.println(locator::config::kGpsTxPin);
-  Serial.println();
-  Serial.println(F("Starting gps amd modem UARTs..."));
+
+  if (locator::config::kAppLogLevel == locator::config::AppLogLevel::kDebug) {
+    Serial.print(F("4G UART RX/TX = "));
+    Serial.print(locator::config::kModemRxPin);
+    Serial.print(F("/"));
+    Serial.println(locator::config::kModemTxPin);
+    Serial.print(F("GPS UART RX/TX = "));
+    Serial.print(locator::config::kGpsRxPin);
+    Serial.print(F("/"));
+    Serial.println(locator::config::kGpsTxPin);
+    Serial.println();
+    Serial.println(F("Starting gps amd modem UARTs..."));
+  }
 
   gpsSerial.begin(
       locator::config::kGpsBaudRate,

@@ -95,7 +95,9 @@ void AppController::begin() {
   gpsStartedLogged_ = false;
   gpsUnableLogged_ = false;
 
-  debug_.println(F("[APP] Boot delay started"));
+  if (isDetailedLoggingEnabled()) {
+    debug_.println(F("[APP] Boot delay started"));
+  }
 }
 
 void AppController::poll() {
@@ -109,7 +111,9 @@ void AppController::poll() {
       if (now - stateEnteredAtMs_ >= config::kBootDelayMs) {
         state_ = State::kInitModem;
         stateEnteredAtMs_ = now;
-        debug_.println(F("[INIT][DEVICE] Starting device initialization"));
+        if (isDetailedLoggingEnabled()) {
+          debug_.println(F("[INIT][DEVICE] Starting device initialization"));
+        }
       }
       break;
 
@@ -133,7 +137,9 @@ void AppController::poll() {
 
     case State::kRecovery:
       if (now - stateEnteredAtMs_ >= config::kRecoveryDelayMs) {
-        debug_.println(F("[APP] Leaving recovery, restarting modem init"));
+        if (isDetailedLoggingEnabled()) {
+          debug_.println(F("[APP] Leaving recovery, restarting modem init"));
+        }
         state_ = State::kInitModem;
         stateEnteredAtMs_ = now;
         initCommandIndex_ = 0;
@@ -155,7 +161,7 @@ void AppController::handleGps() {
   gpsParser_.poll();
 
   const GpsState gpsState = currentGpsState();
-  if (!gpsStartedLogged_ && gpsState != GpsState::kNotStarted) {
+  if (isDetailedLoggingEnabled() && !gpsStartedLogged_ && gpsState != GpsState::kNotStarted) {
     debug_.println(F("[GPS] Startup success: data stream detected"));
     gpsStartedLogged_ = true;
   }
@@ -165,20 +171,23 @@ void AppController::handleGps() {
     hasLastFix_ = true;
     gpsUnableLogged_ = false;
 
-    debug_.print(F("[GPS] Valid GNGLL: "));
-    debug_.println(lastFix_.rawSentence);
-    debug_.print(F("[GPS] Compact payload: "));
-    debug_.println(lastFix_.compactPayload);
+    if (isDetailedLoggingEnabled()) {
+      debug_.print(F("[GPS] Valid GNGLL: "));
+      debug_.println(lastFix_.rawSentence);
+      debug_.print(F("[GPS] Compact payload: "));
+      debug_.println(lastFix_.compactPayload);
+    }
     lastGpsHeartbeatAtMs_ = millis();
     return;
   }
 
-  if (!gpsUnableLogged_ && gpsState == GpsState::kUnableToLocate) {
+  if (isDetailedLoggingEnabled() && !gpsUnableLogged_ && gpsState == GpsState::kUnableToLocate) {
     debug_.println(F("[GPS] Unable to locate within timeout, will publish zero payload"));
     gpsUnableLogged_ = true;
   }
 
-  if (millis() - lastGpsHeartbeatAtMs_ >= config::kGpsHeartbeatIntervalMs) {
+  if (isDetailedLoggingEnabled() &&
+      millis() - lastGpsHeartbeatAtMs_ >= config::kGpsHeartbeatIntervalMs) {
     const GpsStats& stats = gpsParser_.stats();
     debug_.print(F("[GPS] state="));
     debug_.print(gpsStateLabel(gpsState));
@@ -201,8 +210,10 @@ void AppController::handleModem() {
 
   String urc;
   while (modemClient_.takeUrc(urc)) {
-    debug_.print(F("[MODEM] URC: "));
-    debug_.println(urc);
+    if (isDetailedLoggingEnabled()) {
+      debug_.print(F("[MODEM] URC: "));
+      debug_.println(urc);
+    }
   }
 
   AtCommandResult result;
@@ -212,13 +223,15 @@ void AppController::handleModem() {
 }
 
 void AppController::handleCompletedCommand(const AtCommandResult& result) {
-  debug_.print(F("[MODEM] "));
-  debug_.print(result.command);
-  debug_.print(F(" => "));
-  debug_.println(result.success ? F("OK") : (result.timedOut ? F("TIMEOUT") : F("ERROR")));
+  if (isDetailedLoggingEnabled()) {
+    debug_.print(F("[MODEM] "));
+    debug_.print(result.command);
+    debug_.print(F(" => "));
+    debug_.println(result.success ? F("OK") : (result.timedOut ? F("TIMEOUT") : F("ERROR")));
 
-  if (result.response.length() != 0) {
-    debug_.println(result.response);
+    if (result.response.length() != 0) {
+      debug_.println(result.response);
+    }
   }
 
   if (state_ == State::kInitModem) {
@@ -229,7 +242,7 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
       if (initCommandIndex_ >= kInitOperationCount) {
         if (modemClient_.status().startupReady) {
           beginMqttInitialization();
-        } else {
+        } else if (isDetailedLoggingEnabled()) {
           debug_.println(
               F("[INIT][DEVICE] Waiting startup URCs: RDY/SIM_SUCCESS/NETWORK_ACTIVATE_SUCCESS"));
         }
@@ -239,11 +252,14 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
 
     initRetryCount_++;
     if (initRetryCount_ <= 2) {
-      debug_.print(F("[INIT][DEVICE] Retrying step, attempt "));
-      debug_.println(initRetryCount_ + 1);
+      if (isDetailedLoggingEnabled()) {
+        debug_.print(F("[INIT][DEVICE] Retrying step, attempt "));
+        debug_.println(initRetryCount_ + 1);
+      }
       return;
     }
 
+    logInitFailure(F("DEVICE"), F("failed"));
     enterRecovery(F("device init failed"));
     return;
   }
@@ -254,7 +270,9 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
         mqttStepSucceeded &&
         !modemClient_.status().mqttConnected) {
       mqttStepSucceeded = false;
-      debug_.println(F("[INIT][MQTT] Connection status is not ready yet"));
+      if (isDetailedLoggingEnabled()) {
+        debug_.println(F("[INIT][MQTT] Connection status is not ready yet"));
+      }
     }
 
     if (mqttStepSucceeded) {
@@ -265,24 +283,29 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
         state_ = State::kRunning;
         stateEnteredAtMs_ = millis();
         lastPublishAtMs_ = 0;
-        debug_.println(F("[INIT][MQTT] MQTT connection initialization finished"));
-        debug_.println(F("[APP] Initialization complete, entering running state"));
+        logInitSuccess(F("MQTT"), F("success"));
+        if (isDetailedLoggingEnabled()) {
+          debug_.println(F("[APP] Initialization complete, entering running state"));
+        }
       }
       return;
     }
 
     mqttRetryCount_++;
     if (mqttRetryCount_ <= 2) {
-      debug_.print(F("[INIT][MQTT] Retrying step, attempt "));
-      debug_.println(mqttRetryCount_ + 1);
+      if (isDetailedLoggingEnabled()) {
+        debug_.print(F("[INIT][MQTT] Retrying step, attempt "));
+        debug_.println(mqttRetryCount_ + 1);
+      }
       return;
     }
 
+    logInitFailure(F("MQTT"), F("failed"));
     enterRecovery(F("mqtt init failed"));
     return;
   }
 
-  if (state_ == State::kRunning && !result.success) {
+  if (isDetailedLoggingEnabled() && state_ == State::kRunning && !result.success) {
     if (result.op == ModemOp::kAt) {
       debug_.println(F("[APP] Health check failed"));
     }
@@ -292,7 +315,9 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
 void AppController::logModemSummary() {
   const ModemStatus& status = modemClient_.status();
 
-  debug_.print(F("[STATUS] startup="));
+  debug_.print(F("[STATUS] build="));
+  debug_.print(config::kFirmwareVersion);
+  debug_.print(F(" startup="));
   debug_.print(status.startupReady ? F("ready") : F("waiting"));
   debug_.print(F(" health="));
   debug_.print(status.healthCheckOk ? F("ok") : F("fail"));
@@ -300,33 +325,36 @@ void AppController::logModemSummary() {
   debug_.print(gpsStateLabel(currentGpsState()));
   debug_.print(F(" net="));
   debug_.print(status.networkRegistered ? F("ready") : F("waiting"));
-  debug_.print(F(" creg="));
-  debug_.print(status.cregStat);
-  debug_.print(F(" csq="));
-  debug_.print(status.csqRssi);
-  debug_.print(F(","));
-  debug_.print(status.csqBer);
-  debug_.print(F(" sim="));
-  debug_.print(status.simSlot);
   debug_.print(F(" mqtt="));
   debug_.print(status.mqttStatus);
-  debug_.print(F(" iccid="));
-  if (status.iccid.length() == 0) {
-    debug_.print(F("N/A"));
-  } else {
-    debug_.print(status.iccid);
-  }
-  debug_.print(F(" imei="));
-  if (status.imei.length() == 0) {
-    debug_.print(F("N/A"));
-  } else {
-    debug_.print(status.imei);
-  }
-  debug_.print(F(" fw="));
-  if (status.firmwareVersion.length() == 0) {
-    debug_.print(F("N/A"));
-  } else {
-    debug_.print(status.firmwareVersion);
+
+  if (isDetailedLoggingEnabled()) {
+    debug_.print(F(" creg="));
+    debug_.print(status.cregStat);
+    debug_.print(F(" csq="));
+    debug_.print(status.csqRssi);
+    debug_.print(F(","));
+    debug_.print(status.csqBer);
+    debug_.print(F(" sim="));
+    debug_.print(status.simSlot);
+    debug_.print(F(" iccid="));
+    if (status.iccid.length() == 0) {
+      debug_.print(F("N/A"));
+    } else {
+      debug_.print(status.iccid);
+    }
+    debug_.print(F(" imei="));
+    if (status.imei.length() == 0) {
+      debug_.print(F("N/A"));
+    } else {
+      debug_.print(status.imei);
+    }
+    debug_.print(F(" fw="));
+    if (status.firmwareVersion.length() == 0) {
+      debug_.print(F("N/A"));
+    } else {
+      debug_.print(status.firmwareVersion);
+    }
   }
 
   if (hasLastFix_) {
@@ -342,8 +370,10 @@ void AppController::beginMqttInitialization() {
   stateEnteredAtMs_ = millis();
   mqttCommandIndex_ = 0;
   mqttRetryCount_ = 0;
-  debug_.println(F("[INIT][DEVICE] Device initialization finished"));
-  debug_.println(F("[INIT][MQTT] Starting MQTT connection initialization"));
+  logInitSuccess(F("DEVICE"), F("success"));
+  if (isDetailedLoggingEnabled()) {
+    debug_.println(F("[INIT][MQTT] Starting MQTT connection initialization"));
+  }
 }
 
 void AppController::requestNextInitCommand() {
@@ -351,9 +381,12 @@ void AppController::requestNextInitCommand() {
     return;
   }
 
+  if (isDetailedLoggingEnabled()) {
+    const ModemOp op = kInitOperations[initCommandIndex_];
+    debug_.print(F("[INIT][DEVICE] Step: "));
+    debug_.println(deviceInitStepLabel(op));
+  }
   const ModemOp op = kInitOperations[initCommandIndex_];
-  debug_.print(F("[INIT][DEVICE] Step: "));
-  debug_.println(deviceInitStepLabel(op));
   if (!startModemOperation(modemClient_, op)) {
     enterRecovery(F("cannot send init command"));
   }
@@ -364,8 +397,10 @@ void AppController::requestNextMqttCommand() {
     return;
   }
 
-  debug_.print(F("[INIT][MQTT] Step: "));
-  debug_.println(mqttInitStepLabel(mqttCommandIndex_));
+  if (isDetailedLoggingEnabled()) {
+    debug_.print(F("[INIT][MQTT] Step: "));
+    debug_.println(mqttInitStepLabel(mqttCommandIndex_));
+  }
 
   switch (mqttCommandIndex_) {
     case 0:
@@ -441,8 +476,10 @@ void AppController::requestNextPeriodicCommand() {
 }
 
 void AppController::enterRecovery(const __FlashStringHelper* reason) {
-  debug_.print(F("[APP] Recovery: "));
-  debug_.println(reason);
+  if (isDetailedLoggingEnabled()) {
+    debug_.print(F("[APP] Recovery: "));
+    debug_.println(reason);
+  }
   state_ = State::kRecovery;
   stateEnteredAtMs_ = millis();
   initCommandIndex_ = 0;
@@ -458,7 +495,9 @@ bool AppController::shouldTreatMqttInitResultAsSuccess(const AtCommandResult& re
   }
 
   if (result.op == ModemOp::kMqttConfigureBroker && result.response.indexOf("ERROR=202") >= 0) {
-    debug_.println(F("[INIT][MQTT] Broker already exists, continuing with existing server"));
+    if (isDetailedLoggingEnabled()) {
+      debug_.println(F("[INIT][MQTT] Broker already exists, continuing with existing server"));
+    }
     return true;
   }
 
@@ -508,6 +547,28 @@ String AppController::buildMqttInitTestPayload() const {
   String payload = "test+";
   payload += config::kDeviceName;
   return payload;
+}
+
+constexpr bool AppController::isDetailedLoggingEnabled() {
+  return config::kAppLogLevel == config::AppLogLevel::kDebug;
+}
+
+void AppController::logInitSuccess(
+    const __FlashStringHelper* scope,
+    const __FlashStringHelper* message) {
+  debug_.print(F("[INIT]["));
+  debug_.print(scope);
+  debug_.print(F("] "));
+  debug_.println(message);
+}
+
+void AppController::logInitFailure(
+    const __FlashStringHelper* scope,
+    const __FlashStringHelper* message) {
+  debug_.print(F("[INIT]["));
+  debug_.print(scope);
+  debug_.print(F("] "));
+  debug_.println(message);
 }
 
 }  // namespace locator

@@ -34,6 +34,9 @@ class AppController {
   void handleModem();
   void handleCompletedCommand(const AtCommandResult& result);
   bool shouldTreatMqttInitResultAsSuccess(const AtCommandResult& result) const;
+  static constexpr bool isDetailedLoggingEnabled();
+  void logInitSuccess(const __FlashStringHelper* scope, const __FlashStringHelper* message);
+  void logInitFailure(const __FlashStringHelper* scope, const __FlashStringHelper* message);
   void logModemSummary();
   void beginMqttInitialization();
   void requestNextInitCommand();
