@@ -18,7 +18,7 @@ constexpr ModemOp kInitOperations[] = {
 };
 
 constexpr size_t kInitOperationCount = sizeof(kInitOperations) / sizeof(kInitOperations[0]);
-constexpr size_t kMqttInitStepCount = 5;
+constexpr size_t kMqttInitStepCount = 6;
 
 const __FlashStringHelper* deviceInitStepLabel(ModemOp op) {
   switch (op) {
@@ -50,6 +50,8 @@ const __FlashStringHelper* mqttInitStepLabel(size_t stepIndex) {
     case 3:
       return F("verify MQTT connection");
     case 4:
+      return F("subscribe command topic");
+    case 5:
       return F("publish startup test message");
     default:
       return F("unknown");
@@ -84,6 +86,7 @@ AppController::AppController(Stream& debug, Stream& gpsStream, Stream& modemStre
 }
 
 void AppController::begin() {
+  resetRuntimeConfig();
   state_ = State::kBootDelay;
   stateEnteredAtMs_ = millis();
   lastStatusPrintAtMs_ = millis();
@@ -103,6 +106,9 @@ void AppController::begin() {
   gpsUnableLogged_ = false;
   hasLastFix_ = false;
   hasLastReportedFix_ = false;
+  shouldPublishStatus_ = false;
+  shouldPublishConfig_ = false;
+  mqttCommandTopicSubscribed_ = false;
 
   if (isDetailedLoggingEnabled()) {
     debug_.println(F("[APP] Boot delay started"));
@@ -163,6 +169,9 @@ void AppController::poll() {
         lastReportKind_ = ReportKind::kNone;
         hasLastFix_ = false;
         hasLastReportedFix_ = false;
+        shouldPublishStatus_ = false;
+        shouldPublishConfig_ = false;
+        mqttCommandTopicSubscribed_ = false;
       }
       break;
   }
@@ -236,6 +245,11 @@ void AppController::handleModem() {
     }
   }
 
+  MqttReceivedMessage mqttMessage;
+  while (modemClient_.takeReceivedMqttMessage(mqttMessage)) {
+    handleReceivedMqttMessage(mqttMessage);
+  }
+
   AtCommandResult result;
   while (modemClient_.takeCompletedCommand(result)) {
     handleCompletedCommand(result);
@@ -296,6 +310,9 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
     }
 
     if (mqttStepSucceeded) {
+      if (result.op == ModemOp::kMqttSubscribe) {
+        mqttCommandTopicSubscribed_ = true;
+      }
       mqttRetryCount_ = 0;
       mqttCommandIndex_++;
 
@@ -303,6 +320,8 @@ void AppController::handleCompletedCommand(const AtCommandResult& result) {
         state_ = State::kRunning;
         stateEnteredAtMs_ = millis();
         lastPublishAtMs_ = 0;
+        shouldPublishStatus_ = true;
+        shouldPublishConfig_ = true;
         logInitSuccess(F("MQTT"), F("success"));
         if (isDetailedLoggingEnabled()) {
           debug_.println(F("[APP] Initialization complete, entering running state"));
@@ -455,6 +474,12 @@ void AppController::requestNextMqttCommand() {
       return;
 
     case 4:
+      if (!modemClient_.mqttSubscribe(config::kMqttCmdTopic)) {
+        enterRecovery(F("cannot send MQTT init command"));
+      }
+      return;
+
+    case 5:
       if (!modemClient_.mqttPublish(config::kMqttTestTopic, buildMqttInitTestPayload())) {
         enterRecovery(F("cannot send MQTT init command"));
       }
@@ -471,7 +496,25 @@ void AppController::requestNextPeriodicCommand() {
   }
 
   const uint32_t now = millis();
-  const bool shouldPublish = now - lastPublishAtMs_ >= config::kMqttPublishIntervalMs;
+  if (shouldPublishStatus_ && modemClient_.status().mqttConnected) {
+    if (!publishStatus()) {
+      enterRecovery(F("cannot publish status payload"));
+      return;
+    }
+    shouldPublishStatus_ = false;
+    return;
+  }
+
+  if (shouldPublishConfig_ && modemClient_.status().mqttConnected) {
+    if (!publishConfig()) {
+      enterRecovery(F("cannot publish config payload"));
+      return;
+    }
+    shouldPublishConfig_ = false;
+    return;
+  }
+
+  const bool shouldPublish = now - lastPublishAtMs_ >= runtimeConfig_.mqttPublishIntervalMs;
   if (shouldPublish && modemClient_.status().mqttConnected) {
     const ReportKind reportKind = determineNextReportKind(now);
     if (reportKind == ReportKind::kNone) {
@@ -500,7 +543,7 @@ void AppController::requestNextPeriodicCommand() {
     return;
   }
 
-  if (now - lastHealthCheckAtMs_ < config::kModemHealthCheckIntervalMs) {
+  if (now - lastHealthCheckAtMs_ < runtimeConfig_.modemHealthCheckIntervalMs) {
     return;
   }
 
@@ -531,6 +574,9 @@ void AppController::enterRecovery(const __FlashStringHelper* reason) {
   lastReportKind_ = ReportKind::kNone;
   hasLastFix_ = false;
   hasLastReportedFix_ = false;
+  shouldPublishStatus_ = false;
+  shouldPublishConfig_ = false;
+  mqttCommandTopicSubscribed_ = false;
 }
 
 bool AppController::shouldTreatMqttInitResultAsSuccess(const AtCommandResult& result) const {
@@ -548,12 +594,226 @@ bool AppController::shouldTreatMqttInitResultAsSuccess(const AtCommandResult& re
   return false;
 }
 
+void AppController::resetRuntimeConfig() {
+  runtimeConfig_.gpsOfflineAfterMs = config::kGpsOfflineAfterMs;
+  runtimeConfig_.gpsUnableToLocateAfterMs = config::kGpsUnableToLocateAfterMs;
+  runtimeConfig_.modemHealthCheckIntervalMs = config::kModemHealthCheckIntervalMs;
+  runtimeConfig_.mqttPublishIntervalMs = config::kMqttPublishIntervalMs;
+  runtimeConfig_.locationMovementThresholdMeters = config::kLocationMovementThresholdMeters;
+  runtimeConfig_.locationStillDistanceThresholdMeters = config::kLocationStillDistanceThresholdMeters;
+  runtimeConfig_.locationStillConfirmMs = config::kLocationStillConfirmMs;
+  runtimeConfig_.locationStillKeepaliveMs = config::kLocationStillKeepaliveMs;
+  runtimeConfig_.locationNoFixKeepaliveMs = config::kLocationNoFixKeepaliveMs;
+  runtimeConfig_.locationFullResyncMs = config::kLocationFullResyncMs;
+  runtimeConfig_.remoteConfigOverrideEnabled = config::kEnableRemoteConfigOverride;
+}
+
+void AppController::handleReceivedMqttMessage(const MqttReceivedMessage& message) {
+  if (message.topic != config::kMqttCmdTopic) {
+    return;
+  }
+
+  if (isDetailedLoggingEnabled()) {
+    debug_.print(F("[MQTT] RX cmd: "));
+    debug_.println(message.payload);
+  }
+
+  if (message.payload.indexOf("\"cmd\":\"get_status\"") >= 0) {
+    shouldPublishStatus_ = true;
+    return;
+  }
+
+  if (message.payload.indexOf("\"cmd\":\"get_config\"") >= 0) {
+    shouldPublishConfig_ = true;
+    return;
+  }
+
+  if (message.payload.indexOf("\"cmd\":\"set_config\"") >= 0) {
+    if (applyRemoteConfigPayload(message.payload)) {
+      shouldPublishConfig_ = true;
+      shouldPublishStatus_ = true;
+    }
+  }
+}
+
+bool AppController::publishStatus() {
+  return modemClient_.mqttPublish(config::kMqttStatusTopic, buildStatusPayload());
+}
+
+bool AppController::publishConfig() {
+  return modemClient_.mqttPublish(config::kMqttConfigTopic, buildConfigPayload());
+}
+
+String AppController::buildStatusPayload() const {
+  const ModemStatus& status = modemClient_.status();
+  String payload = "{";
+  payload += "\"build\":\"";
+  payload += config::kFirmwareVersion;
+  payload += "\",\"startup\":";
+  payload += status.startupReady ? "1" : "0";
+  payload += ",\"health\":";
+  payload += status.healthCheckOk ? "1" : "0";
+  payload += ",\"gps\":\"";
+  switch (currentGpsState()) {
+    case GpsState::kNotStarted:
+      payload += "not_started";
+      break;
+    case GpsState::kOffline:
+      payload += "offline";
+      break;
+    case GpsState::kStartedSearching:
+      payload += "searching";
+      break;
+    case GpsState::kLocated:
+      payload += "located";
+      break;
+    case GpsState::kUnableToLocate:
+      payload += "unable";
+      break;
+  }
+  payload += "\",\"net\":";
+  payload += status.networkRegistered ? "1" : "0";
+  payload += ",\"mqtt\":";
+  payload += String(status.mqttStatus);
+  payload += ",\"creg\":";
+  payload += String(status.cregStat);
+  payload += ",\"imei\":\"";
+  payload += status.imei;
+  payload += "\",\"iccid\":\"";
+  payload += status.iccid;
+  payload += "\",\"fw\":\"";
+  payload += status.firmwareVersion;
+  payload += "\"}";
+  return payload;
+}
+
+String AppController::buildConfigPayload() const {
+  String payload = "{";
+  payload += "\"pub_ms\":";
+  payload += String(runtimeConfig_.mqttPublishIntervalMs);
+  payload += ",\"gps_offline_ms\":";
+  payload += String(runtimeConfig_.gpsOfflineAfterMs);
+  payload += ",\"gps_unable_ms\":";
+  payload += String(runtimeConfig_.gpsUnableToLocateAfterMs);
+  payload += ",\"move_m\":";
+  payload += String(runtimeConfig_.locationMovementThresholdMeters);
+  payload += ",\"still_m\":";
+  payload += String(runtimeConfig_.locationStillDistanceThresholdMeters);
+  payload += ",\"still_confirm_ms\":";
+  payload += String(runtimeConfig_.locationStillConfirmMs);
+  payload += ",\"still_keepalive_ms\":";
+  payload += String(runtimeConfig_.locationStillKeepaliveMs);
+  payload += ",\"nofix_keepalive_ms\":";
+  payload += String(runtimeConfig_.locationNoFixKeepaliveMs);
+  payload += ",\"full_resync_ms\":";
+  payload += String(runtimeConfig_.locationFullResyncMs);
+  payload += ",\"health_ms\":";
+  payload += String(runtimeConfig_.modemHealthCheckIntervalMs);
+  payload += ",\"remote_cfg\":";
+  payload += runtimeConfig_.remoteConfigOverrideEnabled ? "1" : "0";
+  payload += "}";
+  return payload;
+}
+
+bool AppController::applyRemoteConfigPayload(const String& payload) {
+  if (!runtimeConfig_.remoteConfigOverrideEnabled) {
+    return false;
+  }
+
+  uint32_t value = 0;
+  bool changed = false;
+  bool boolValue = false;
+
+  if (extractJsonUint32(payload, "pub_ms", value) && value > 0) {
+    runtimeConfig_.mqttPublishIntervalMs = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "gps_offline_ms", value) && value > 0) {
+    runtimeConfig_.gpsOfflineAfterMs = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "gps_unable_ms", value) && value > 0) {
+    runtimeConfig_.gpsUnableToLocateAfterMs = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "move_m", value) && value > 0) {
+    runtimeConfig_.locationMovementThresholdMeters = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "still_m", value) && value > 0) {
+    runtimeConfig_.locationStillDistanceThresholdMeters = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "still_confirm_ms", value) && value > 0) {
+    runtimeConfig_.locationStillConfirmMs = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "still_keepalive_ms", value) && value > 0) {
+    runtimeConfig_.locationStillKeepaliveMs = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "nofix_keepalive_ms", value) && value > 0) {
+    runtimeConfig_.locationNoFixKeepaliveMs = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "full_resync_ms", value) && value > 0) {
+    runtimeConfig_.locationFullResyncMs = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "health_ms", value) && value > 0) {
+    runtimeConfig_.modemHealthCheckIntervalMs = value;
+    changed = true;
+  }
+  if (extractJsonBool(payload, "remote_cfg", boolValue)) {
+    runtimeConfig_.remoteConfigOverrideEnabled = boolValue;
+    changed = true;
+  }
+
+  return changed;
+}
+
+bool AppController::extractJsonUint32(const String& payload, const char* key, uint32_t& outValue) const {
+  String pattern = "\"";
+  pattern += key;
+  pattern += "\":";
+  const int start = payload.indexOf(pattern);
+  if (start < 0) {
+    return false;
+  }
+
+  int valueStart = start + pattern.length();
+  while (valueStart < payload.length() && payload[valueStart] == ' ') {
+    ++valueStart;
+  }
+
+  int valueEnd = valueStart;
+  while (valueEnd < payload.length() && isDigit(payload[valueEnd])) {
+    ++valueEnd;
+  }
+
+  if (valueEnd <= valueStart) {
+    return false;
+  }
+
+  outValue = static_cast<uint32_t>(payload.substring(valueStart, valueEnd).toInt());
+  return true;
+}
+
+bool AppController::extractJsonBool(const String& payload, const char* key, bool& outValue) const {
+  uint32_t value = 0;
+  if (!extractJsonUint32(payload, key, value)) {
+    return false;
+  }
+  outValue = value != 0;
+  return true;
+}
+
 AppController::GpsState AppController::currentGpsState() const {
   if (!gpsParser_.hasSeenAnyData()) {
     return GpsState::kNotStarted;
   }
 
-  if (millis() - gpsParser_.lastDataAtMs() > config::kGpsOfflineAfterMs) {
+  if (millis() - gpsParser_.lastDataAtMs() > runtimeConfig_.gpsOfflineAfterMs) {
     return GpsState::kOffline;
   }
 
@@ -561,7 +821,7 @@ AppController::GpsState AppController::currentGpsState() const {
     return GpsState::kLocated;
   }
 
-  if (millis() - gpsParser_.firstDataAtMs() >= config::kGpsUnableToLocateAfterMs) {
+  if (millis() - gpsParser_.firstDataAtMs() >= runtimeConfig_.gpsUnableToLocateAfterMs) {
     return GpsState::kUnableToLocate;
   }
 
@@ -597,7 +857,7 @@ AppController::ReportKind AppController::determineNextReportKind(uint32_t now) c
   const GpsState gpsState = currentGpsState();
   if (gpsState != GpsState::kLocated) {
     if (lastReportKind_ != ReportKind::kNoFix ||
-        now - lastNoFixReportAtMs_ >= config::kLocationNoFixKeepaliveMs) {
+        now - lastNoFixReportAtMs_ >= runtimeConfig_.locationNoFixKeepaliveMs) {
       return ReportKind::kNoFix;
     }
     return ReportKind::kNone;
@@ -606,14 +866,14 @@ AppController::ReportKind AppController::determineNextReportKind(uint32_t now) c
   const bool moved = hasMovementBeyondThreshold();
   if (!hasLastReportedFix_ || moved ||
       lastReportKind_ == ReportKind::kNoFix ||
-      now - lastFullReportAtMs_ >= config::kLocationFullResyncMs) {
+      now - lastFullReportAtMs_ >= runtimeConfig_.locationFullResyncMs) {
     return ReportKind::kFull;
   }
 
   if (stationarySinceMs_ != 0 && isWithinStillDistanceThreshold() &&
-      now - stationarySinceMs_ >= config::kLocationStillConfirmMs &&
+      now - stationarySinceMs_ >= runtimeConfig_.locationStillConfirmMs &&
       (lastReportKind_ != ReportKind::kStill ||
-       now - lastStillReportAtMs_ >= config::kLocationStillKeepaliveMs)) {
+       now - lastStillReportAtMs_ >= runtimeConfig_.locationStillKeepaliveMs)) {
     return ReportKind::kStill;
   }
 
@@ -652,7 +912,7 @@ bool AppController::hasMovementBeyondThreshold() const {
   }
 
   return distanceMeters(lastFix_, lastReportedFix_) >=
-         static_cast<float>(config::kLocationMovementThresholdMeters);
+         static_cast<float>(runtimeConfig_.locationMovementThresholdMeters);
 }
 
 bool AppController::isWithinStillDistanceThreshold() const {
@@ -661,7 +921,7 @@ bool AppController::isWithinStillDistanceThreshold() const {
   }
 
   return distanceMeters(lastFix_, lastReportedFix_) <=
-         static_cast<float>(config::kLocationStillDistanceThresholdMeters);
+         static_cast<float>(runtimeConfig_.locationStillDistanceThresholdMeters);
 }
 
 uint32_t AppController::stillDurationSeconds(uint32_t now) const {

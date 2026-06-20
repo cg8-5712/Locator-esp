@@ -38,8 +38,23 @@ class AppController {
     kNoFix,
   };
 
+  struct RuntimeConfig {
+    uint32_t gpsOfflineAfterMs = 0;
+    uint32_t gpsUnableToLocateAfterMs = 0;
+    uint32_t modemHealthCheckIntervalMs = 0;
+    uint32_t mqttPublishIntervalMs = 0;
+    uint32_t locationMovementThresholdMeters = 0;
+    uint32_t locationStillDistanceThresholdMeters = 0;
+    uint32_t locationStillConfirmMs = 0;
+    uint32_t locationStillKeepaliveMs = 0;
+    uint32_t locationNoFixKeepaliveMs = 0;
+    uint32_t locationFullResyncMs = 0;
+    bool remoteConfigOverrideEnabled = false;
+  };
+
   void handleGps();
   void handleModem();
+  void handleReceivedMqttMessage(const MqttReceivedMessage& message);
   void handleCompletedCommand(const AtCommandResult& result);
   bool shouldTreatMqttInitResultAsSuccess(const AtCommandResult& result) const;
   static constexpr bool isDetailedLoggingEnabled();
@@ -51,6 +66,14 @@ class AppController {
   void requestNextMqttCommand();
   void requestNextPeriodicCommand();
   void enterRecovery(const __FlashStringHelper* reason);
+  void resetRuntimeConfig();
+  bool publishStatus();
+  bool publishConfig();
+  String buildStatusPayload() const;
+  String buildConfigPayload() const;
+  bool applyRemoteConfigPayload(const String& payload);
+  bool extractJsonUint32(const String& payload, const char* key, uint32_t& outValue) const;
+  bool extractJsonBool(const String& payload, const char* key, bool& outValue) const;
   GpsState currentGpsState() const;
   const __FlashStringHelper* gpsStateLabel(GpsState state) const;
   ReportKind determineNextReportKind(uint32_t now) const;
@@ -80,6 +103,10 @@ class AppController {
   uint32_t lastNoFixReportAtMs_ = 0;
   uint32_t stationarySinceMs_ = 0;
   ReportKind lastReportKind_ = ReportKind::kNone;
+  RuntimeConfig runtimeConfig_;
+  bool shouldPublishStatus_ = false;
+  bool shouldPublishConfig_ = false;
+  bool mqttCommandTopicSubscribed_ = false;
 
   GngllData lastFix_;
   GngllData lastReportedFix_;

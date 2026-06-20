@@ -295,6 +295,83 @@ Benefits:
 - lower power consumption
 - fewer duplicate database records
 
+## MQTT Management Interface
+
+### Topics
+
+In addition to the location topic, the firmware uses:
+
+- `kMqttStatusTopic`
+- `kMqttConfigTopic`
+- `kMqttCmdTopic`
+
+### Startup Publishing
+
+After MQTT initialization succeeds, the device publishes:
+
+1. startup test payload to `kMqttTestTopic`
+2. one `status` payload
+3. one `config` payload
+
+### `status` Payload
+
+Current format is compact JSON, for example:
+
+```json
+{"build":"Jun 20 2026 10:32:11","startup":1,"health":1,"gps":"located","net":1,"mqtt":1,"creg":1,"imei":"868478081658261","iccid":"89860412102570034386","fw":"+VERSION=CT12_V1.0.5"}
+```
+
+### `config` Payload
+
+Current format is compact JSON, for example:
+
+```json
+{"pub_ms":30000,"gps_offline_ms":10000,"gps_unable_ms":30000,"move_m":30,"still_m":30,"still_confirm_ms":300000,"still_keepalive_ms":900000,"nofix_keepalive_ms":900000,"full_resync_ms":3600000,"health_ms":30000,"remote_cfg":1}
+```
+
+### Downlink Commands
+
+The device subscribes to `kMqttCmdTopic` during MQTT initialization.
+
+Supported commands:
+
+```json
+{"cmd":"get_status"}
+{"cmd":"get_config"}
+{"cmd":"set_config","pub_ms":60000,"move_m":50}
+```
+
+Behavior:
+
+- `get_status`
+  Schedules one publish to `kMqttStatusTopic`
+- `get_config`
+  Schedules one publish to `kMqttConfigTopic`
+- `set_config`
+  Applies supported runtime overrides, then republishes both `status` and `config`
+
+### Current Remote-Config Scope
+
+Supported override fields:
+
+- `pub_ms`
+- `gps_offline_ms`
+- `gps_unable_ms`
+- `move_m`
+- `still_m`
+- `still_confirm_ms`
+- `still_keepalive_ms`
+- `nofix_keepalive_ms`
+- `full_resync_ms`
+- `health_ms`
+- `remote_cfg`
+
+Current limitation:
+
+- overrides are runtime-only
+- there is no persistent storage yet
+- command parsing is lightweight and assumes compact JSON without escaping complexity
+
 ## Logging Policy
 
 Logging is controlled by `AppLogLevel` in `include/config.h`.

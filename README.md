@@ -59,6 +59,29 @@ Backend recommendation:
 - treat `S:` as a stationary extension, not a new coordinate
 - treat `Z:0` as alive/no-fix status, not a fake location point
 
+## MQTT Management Topics
+
+The firmware now supports three management topics in addition to the location topic:
+
+- `locator/<device>/status`
+- `locator/<device>/config`
+- `locator/<device>/cmd`
+
+Behavior:
+
+- device publishes `status` once after MQTT initialization succeeds
+- device publishes `config` once after MQTT initialization succeeds
+- platform can request current values through the `cmd` topic
+- platform can send runtime config overrides through the `cmd` topic
+
+Supported command payloads:
+
+```json
+{"cmd":"get_status"}
+{"cmd":"get_config"}
+{"cmd":"set_config","pub_ms":60000,"move_m":50}
+```
+
 ## Configuration
 
 Most policy values are centralized in `include/config.h`, including:

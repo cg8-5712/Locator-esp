@@ -68,7 +68,7 @@ static constexpr const char* kLocationZeroPayload = "0,0,0";
 
 // Future management platform support: compile-time defaults can later be
 // overridden by MQTT-delivered runtime configuration.
-static constexpr bool kEnableRemoteConfigOverride = false;
+static constexpr bool kEnableRemoteConfigOverride = true;
 
 static constexpr const char* kDeviceName = "locator-esp32s3-001";
 static constexpr const char* kMqttClientId = kDeviceName;
@@ -83,6 +83,7 @@ static constexpr const char* kMqttLocationTopic = "locator/locator-esp32s3-001/l
 static constexpr const char* kMqttTestTopic = "locator/locator-esp32s3-001/test";
 static constexpr const char* kMqttStatusTopic = "locator/locator-esp32s3-001/status";
 static constexpr const char* kMqttConfigTopic = "locator/locator-esp32s3-001/config";
+static constexpr const char* kMqttCmdTopic = "locator/locator-esp32s3-001/cmd";
 
 }  // namespace config
 }  // namespace locator

@@ -17,6 +17,7 @@ enum class ModemOp : uint8_t {
   kMqttConfigureBroker,
   kMqttStart,
   kMqttQueryStatus,
+  kMqttSubscribe,
   kMqttPublish,
   kSocketSend,
 };
@@ -29,6 +30,11 @@ struct AtCommandResult {
   String response;
   bool success = false;
   bool timedOut = false;
+};
+
+struct MqttReceivedMessage {
+  String topic;
+  String payload;
 };
 
 struct ModemStatus {
@@ -68,12 +74,14 @@ class ModemAtClient {
   bool mqttConfigureBroker(const char* host, uint16_t port, bool autoReconnect);
   bool mqttStart(uint8_t cleanSession, uint16_t keepAliveSeconds);
   bool mqttQueryStatus();
+  bool mqttSubscribe(const char* topic, uint8_t qos = 0);
   bool mqttPublish(const char* topic, const String& payload, uint8_t qos = 0, bool retain = false);
   bool socketSend(uint8_t linkNumber, const String& payload, uint32_t timeoutMs);
   bool isIdle() const;
 
   bool takeCompletedCommand(AtCommandResult& outResult);
   bool takeUrc(String& outUrc);
+  bool takeReceivedMqttMessage(MqttReceivedMessage& outMessage);
 
   const ModemStatus& status() const;
 
@@ -97,6 +105,7 @@ class ModemAtClient {
   void parseCsq(const String& line);
   void parseIccid(const String& line);
   void parseSimSlot(const String& line);
+  bool parseMqttReceiveLine(const String& line, MqttReceivedMessage& outMessage) const;
 
   Stream* stream_ = nullptr;
   char lineBuffer_[kLineBufferSize] = {};
@@ -118,6 +127,8 @@ class ModemAtClient {
 
   bool hasUrc_ = false;
   String lastUrc_;
+  bool hasReceivedMqttMessage_ = false;
+  MqttReceivedMessage lastReceivedMqttMessage_;
   ModemStatus status_;
 };
 

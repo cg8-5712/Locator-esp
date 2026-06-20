@@ -28,6 +28,8 @@ const char* modemOpName(ModemOp op) {
       return "mqtt_start";
     case ModemOp::kMqttQueryStatus:
       return "mqtt_query_status";
+    case ModemOp::kMqttSubscribe:
+      return "mqtt_subscribe";
     case ModemOp::kMqttPublish:
       return "mqtt_publish";
     case ModemOp::kSocketSend:
@@ -159,6 +161,14 @@ bool ModemAtClient::mqttQueryStatus() {
   return startCommand(ModemOp::kMqttQueryStatus, "AT+QMTSTATU", 2000);
 }
 
+bool ModemAtClient::mqttSubscribe(const char* topic, uint8_t qos) {
+  String command = "AT+QMTSUB=\"";
+  command += topic;
+  command += "\",";
+  command += String(qos);
+  return startCommand(ModemOp::kMqttSubscribe, command, 3000);
+}
+
 bool ModemAtClient::mqttPublish(
     const char* topic,
     const String& payload,
@@ -246,6 +256,18 @@ bool ModemAtClient::takeUrc(String& outUrc) {
   return true;
 }
 
+bool ModemAtClient::takeReceivedMqttMessage(MqttReceivedMessage& outMessage) {
+  if (!hasReceivedMqttMessage_) {
+    return false;
+  }
+
+  outMessage = lastReceivedMqttMessage_;
+  hasReceivedMqttMessage_ = false;
+  lastReceivedMqttMessage_.topic.remove(0);
+  lastReceivedMqttMessage_.payload.remove(0);
+  return true;
+}
+
 const ModemStatus& ModemAtClient::status() const {
   return status_;
 }
@@ -287,6 +309,19 @@ void ModemAtClient::handleLine(const String& line) {
   String normalizedLine = line;
   normalizedLine.trim();
   parseStatusLine(normalizedLine);
+
+  MqttReceivedMessage mqttMessage;
+  if (parseMqttReceiveLine(normalizedLine, mqttMessage)) {
+    lastReceivedMqttMessage_ = mqttMessage;
+    hasReceivedMqttMessage_ = true;
+    if (commandPending_) {
+      if (pendingResponse_.length() != 0) {
+        pendingResponse_ += "\n";
+      }
+      pendingResponse_ += normalizedLine;
+    }
+    return;
+  }
 
   if (commandPending_) {
     if (pendingOp_ == ModemOp::kQueryImei) {
@@ -522,6 +557,36 @@ void ModemAtClient::parseSimSlot(const String& line) {
   payload.trim();
   status_.simSlot = payload.toInt();
   status_.lastUpdateMs = millis();
+}
+
+bool ModemAtClient::parseMqttReceiveLine(const String& line, MqttReceivedMessage& outMessage) const {
+  if (!line.startsWith("+QMTRECV:")) {
+    return false;
+  }
+
+  const int firstQuote = line.indexOf('"');
+  if (firstQuote < 0) {
+    return false;
+  }
+
+  const int secondQuote = line.indexOf('"', firstQuote + 1);
+  if (secondQuote < 0) {
+    return false;
+  }
+
+  const int thirdQuote = line.indexOf('"', secondQuote + 1);
+  if (thirdQuote < 0) {
+    return false;
+  }
+
+  const int fourthQuote = line.indexOf('"', thirdQuote + 1);
+  if (fourthQuote < 0) {
+    return false;
+  }
+
+  outMessage.topic = line.substring(firstQuote + 1, secondQuote);
+  outMessage.payload = line.substring(thirdQuote + 1, fourthQuote);
+  return outMessage.topic.length() != 0;
 }
 
 }  // namespace locator
