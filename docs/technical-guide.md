@@ -70,6 +70,22 @@ If validation fails:
 - parser statistics are updated
 - the main loop continues without blocking
 
+### Suspicious Drift Filtering
+
+After a fix is syntactically valid, the application still performs one more trust check before
+accepting it as the current location.
+
+The candidate fix is rejected when both conditions indicate a likely outlier:
+
+- jump distance from the last trusted fix is too large
+- implied speed from the last trusted fix is too high
+
+If a candidate fix is rejected:
+
+- it is not used to replace the current trusted fix
+- location reporting continues to use the previous trusted fix
+- this avoids one-shot drift spikes from polluting the track
+
 ### Compact Payload Format
 
 The current compact location payload is:
@@ -338,7 +354,7 @@ Supported commands:
 ```json
 {"cmd":"get_status"}
 {"cmd":"get_config"}
-{"cmd":"set_config","pub_ms":60000,"move_m":50}
+{"cmd":"set_config","pub_ms":60000,"move_m":50,"gps_outlier_m":120,"gps_outlier_mps":50}
 ```
 
 Behavior:
@@ -357,6 +373,8 @@ Supported override fields:
 - `pub_ms`
 - `gps_offline_ms`
 - `gps_unable_ms`
+- `gps_outlier_m`
+- `gps_outlier_mps`
 - `move_m`
 - `still_m`
 - `still_confirm_ms`
@@ -394,6 +412,8 @@ Important groups:
 - `kGpsStaleAfterMs`
 - `kGpsOfflineAfterMs`
 - `kGpsUnableToLocateAfterMs`
+- `kGpsOutlierDistanceThresholdMeters`
+- `kGpsOutlierSpeedThresholdMps`
 - `kGpsHeartbeatIntervalMs`
 
 ### Modem and MQTT

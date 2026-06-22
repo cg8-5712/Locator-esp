@@ -59,6 +59,12 @@ Backend recommendation:
 - treat `S:` as a stationary extension, not a new coordinate
 - treat `Z:0` as alive/no-fix status, not a fake location point
 
+The firmware also filters suspicious GPS drift:
+
+- a new fix can be rejected if it jumps too far from the last trusted fix
+- a new fix can be rejected if the implied speed is unrealistically high
+- when rejected, the device keeps reporting from the last trusted fix instead of the bad point
+
 ## MQTT Management Topics
 
 The firmware now supports three management topics in addition to the location topic:
@@ -79,7 +85,7 @@ Supported command payloads:
 ```json
 {"cmd":"get_status"}
 {"cmd":"get_config"}
-{"cmd":"set_config","pub_ms":60000,"move_m":50}
+{"cmd":"set_config","pub_ms":60000,"move_m":50,"gps_outlier_m":120,"gps_outlier_mps":50}
 ```
 
 ## Configuration

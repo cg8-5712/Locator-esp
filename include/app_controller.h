@@ -41,6 +41,8 @@ class AppController {
   struct RuntimeConfig {
     uint32_t gpsOfflineAfterMs = 0;
     uint32_t gpsUnableToLocateAfterMs = 0;
+    uint32_t gpsOutlierDistanceThresholdMeters = 0;
+    uint32_t gpsOutlierSpeedThresholdMps = 0;
     uint32_t modemHealthCheckIntervalMs = 0;
     uint32_t mqttPublishIntervalMs = 0;
     uint32_t locationMovementThresholdMeters = 0;
@@ -71,6 +73,7 @@ class AppController {
   bool publishConfig();
   String buildStatusPayload() const;
   String buildConfigPayload() const;
+  bool shouldAcceptFix(const GngllData& candidate, uint32_t now) const;
   bool applyRemoteConfigPayload(const String& payload);
   bool extractJsonUint32(const String& payload, const char* key, uint32_t& outValue) const;
   bool extractJsonBool(const String& payload, const char* key, bool& outValue) const;
@@ -110,6 +113,7 @@ class AppController {
 
   GngllData lastFix_;
   GngllData lastReportedFix_;
+  uint32_t lastFixAcceptedAtMs_ = 0;
   bool hasLastFix_ = false;
   bool hasLastReportedFix_ = false;
   bool gpsStartedLogged_ = false;

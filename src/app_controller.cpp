@@ -105,6 +105,7 @@ void AppController::begin() {
   gpsStartedLogged_ = false;
   gpsUnableLogged_ = false;
   hasLastFix_ = false;
+  lastFixAcceptedAtMs_ = 0;
   hasLastReportedFix_ = false;
   shouldPublishStatus_ = false;
   shouldPublishConfig_ = false;
@@ -168,6 +169,7 @@ void AppController::poll() {
         stationarySinceMs_ = 0;
         lastReportKind_ = ReportKind::kNone;
         hasLastFix_ = false;
+        lastFixAcceptedAtMs_ = 0;
         hasLastReportedFix_ = false;
         shouldPublishStatus_ = false;
         shouldPublishConfig_ = false;
@@ -192,12 +194,24 @@ void AppController::handleGps() {
   }
 
   if (gpsParser_.hasNewFix()) {
-    lastFix_ = gpsParser_.takeLatestFix();
+    const GngllData candidateFix = gpsParser_.takeLatestFix();
+    const uint32_t now = millis();
+    if (!shouldAcceptFix(candidateFix, now)) {
+      if (isDetailedLoggingEnabled()) {
+        debug_.print(F("[GPS] Ignored suspicious fix: "));
+        debug_.println(candidateFix.compactPayload);
+      }
+      lastGpsHeartbeatAtMs_ = now;
+      return;
+    }
+
+    lastFix_ = candidateFix;
     hasLastFix_ = true;
+    lastFixAcceptedAtMs_ = now;
     gpsUnableLogged_ = false;
 
     if (stationarySinceMs_ == 0 || !hasLastReportedFix_ || hasMovementBeyondThreshold()) {
-      stationarySinceMs_ = millis();
+      stationarySinceMs_ = now;
     }
 
     if (isDetailedLoggingEnabled()) {
@@ -206,7 +220,7 @@ void AppController::handleGps() {
       debug_.print(F("[GPS] Compact payload: "));
       debug_.println(lastFix_.compactPayload);
     }
-    lastGpsHeartbeatAtMs_ = millis();
+    lastGpsHeartbeatAtMs_ = now;
     return;
   }
 
@@ -573,6 +587,7 @@ void AppController::enterRecovery(const __FlashStringHelper* reason) {
   stationarySinceMs_ = 0;
   lastReportKind_ = ReportKind::kNone;
   hasLastFix_ = false;
+  lastFixAcceptedAtMs_ = 0;
   hasLastReportedFix_ = false;
   shouldPublishStatus_ = false;
   shouldPublishConfig_ = false;
@@ -597,6 +612,8 @@ bool AppController::shouldTreatMqttInitResultAsSuccess(const AtCommandResult& re
 void AppController::resetRuntimeConfig() {
   runtimeConfig_.gpsOfflineAfterMs = config::kGpsOfflineAfterMs;
   runtimeConfig_.gpsUnableToLocateAfterMs = config::kGpsUnableToLocateAfterMs;
+  runtimeConfig_.gpsOutlierDistanceThresholdMeters = config::kGpsOutlierDistanceThresholdMeters;
+  runtimeConfig_.gpsOutlierSpeedThresholdMps = config::kGpsOutlierSpeedThresholdMps;
   runtimeConfig_.modemHealthCheckIntervalMs = config::kModemHealthCheckIntervalMs;
   runtimeConfig_.mqttPublishIntervalMs = config::kMqttPublishIntervalMs;
   runtimeConfig_.locationMovementThresholdMeters = config::kLocationMovementThresholdMeters;
@@ -677,6 +694,8 @@ String AppController::buildStatusPayload() const {
   payload += String(status.mqttStatus);
   payload += ",\"creg\":";
   payload += String(status.cregStat);
+  payload += ",\"fix_age_ms\":";
+  payload += hasLastFix_ ? String(millis() - lastFixAcceptedAtMs_) : String(0);
   payload += ",\"imei\":\"";
   payload += status.imei;
   payload += "\",\"iccid\":\"";
@@ -695,6 +714,10 @@ String AppController::buildConfigPayload() const {
   payload += String(runtimeConfig_.gpsOfflineAfterMs);
   payload += ",\"gps_unable_ms\":";
   payload += String(runtimeConfig_.gpsUnableToLocateAfterMs);
+  payload += ",\"gps_outlier_m\":";
+  payload += String(runtimeConfig_.gpsOutlierDistanceThresholdMeters);
+  payload += ",\"gps_outlier_mps\":";
+  payload += String(runtimeConfig_.gpsOutlierSpeedThresholdMps);
   payload += ",\"move_m\":";
   payload += String(runtimeConfig_.locationMovementThresholdMeters);
   payload += ",\"still_m\":";
@@ -713,6 +736,29 @@ String AppController::buildConfigPayload() const {
   payload += runtimeConfig_.remoteConfigOverrideEnabled ? "1" : "0";
   payload += "}";
   return payload;
+}
+
+bool AppController::shouldAcceptFix(const GngllData& candidate, uint32_t now) const {
+  if (!hasLastFix_ || lastFixAcceptedAtMs_ == 0) {
+    return true;
+  }
+
+  const float distance = distanceMeters(candidate, lastFix_);
+  if (distance <= static_cast<float>(runtimeConfig_.gpsOutlierDistanceThresholdMeters)) {
+    return true;
+  }
+
+  if (now <= lastFixAcceptedAtMs_) {
+    return false;
+  }
+
+  const float elapsedSeconds = static_cast<float>(now - lastFixAcceptedAtMs_) / 1000.0f;
+  if (elapsedSeconds <= 0.0f) {
+    return false;
+  }
+
+  const float speedMps = distance / elapsedSeconds;
+  return speedMps <= static_cast<float>(runtimeConfig_.gpsOutlierSpeedThresholdMps);
 }
 
 bool AppController::applyRemoteConfigPayload(const String& payload) {
@@ -734,6 +780,14 @@ bool AppController::applyRemoteConfigPayload(const String& payload) {
   }
   if (extractJsonUint32(payload, "gps_unable_ms", value) && value > 0) {
     runtimeConfig_.gpsUnableToLocateAfterMs = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "gps_outlier_m", value) && value > 0) {
+    runtimeConfig_.gpsOutlierDistanceThresholdMeters = value;
+    changed = true;
+  }
+  if (extractJsonUint32(payload, "gps_outlier_mps", value) && value > 0) {
+    runtimeConfig_.gpsOutlierSpeedThresholdMps = value;
     changed = true;
   }
   if (extractJsonUint32(payload, "move_m", value) && value > 0) {
